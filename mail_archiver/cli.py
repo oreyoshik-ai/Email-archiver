@@ -26,7 +26,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径")
     parser.add_argument("--from-dir", help="从目录导入 .eml / .mbox")
     parser.add_argument("--from-file", help="导入单个 .eml 或 .mbox")
-    parser.add_argument("--date", help="归档日期 YYYY-MM-DD，命令行模式使用")
+    parser.add_argument("--date", help="归档日期 YYYY-MM-DD（单日）；命令行模式使用")
+    parser.add_argument("--start", help="区间开始日期 YYYY-MM-DD（与 --end 配合归档区间）")
+    parser.add_argument("--end", help="区间结束日期 YYYY-MM-DD（与 --start 配合归档区间）")
     parser.add_argument("--init-config", action="store_true", help="生成 config.local.json")
     parser.add_argument("--self-test", action="store_true", help="运行内置自检")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -52,7 +54,13 @@ def run_cli_archive(args: argparse.Namespace) -> int:
         print("未配置邮箱。双击「打开页面.bat」用网页填写，或加上 --from-dir。")
         return 2
 
-    day = parse_day(args.date, cfg.timezone)
+    if args.start or args.end:
+        start = parse_day(args.start, cfg.timezone) if args.start else parse_day(args.date, cfg.timezone)
+        end = parse_day(args.end, cfg.timezone) if args.end else start
+    else:
+        start = end = parse_day(args.date, cfg.timezone)
+    if start > end:
+        start, end = end, start
     LOG.info("归档根目录: %s", cfg.archive_root)
     try:
         if args.from_file:
@@ -60,8 +68,8 @@ def run_cli_archive(args: argparse.Namespace) -> int:
         elif args.from_dir:
             result = run_local_paths(cfg, [Path(args.from_dir)])
         else:
-            LOG.info("IMAP 筛选日期: %s", day.isoformat())
-            result = run_imap(cfg, day)
+            LOG.info("IMAP 筛选区间: %s~%s", start.isoformat(), end.isoformat())
+            result = run_imap(cfg, start, end)
     except Exception as exc:
         LOG.error("%s", exc)
         return 1

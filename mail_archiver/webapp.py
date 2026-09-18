@@ -27,7 +27,7 @@ from mail_archiver.config import (
 from mail_archiver.imap_client import ImapError
 from mail_archiver.jobs import RUNNER
 from mail_archiver.pipeline import run_demo, run_imap, run_local_paths
-from mail_archiver.results import list_day, list_days
+from mail_archiver.results import list_day, list_days, list_range
 from mail_archiver.util import resolve_timezone, sanitize_filename, unique_path
 
 LOG = logging.getLogger("mail_archiver")
@@ -124,16 +124,32 @@ def _safe_under(archive_root: Path, target: Path) -> Path:
     return resolved
 
 
-def _state_payload() -> dict:
+def _parse_day(value: str | None, fallback: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return fallback
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return fallback
+
+
+def _state_payload(start_iso: str, end_iso: str) -> dict:
     cfg = load_config()
-    day = _today(cfg)
+    today = _today(cfg)
+    start = date.fromisoformat(start_iso or today)
+    end = date.fromisoformat(end_iso or start_iso or today)
+    if start > end:
+        start, end = end, start
     job = RUNNER.state.snapshot()
     return {
         "config": config_public_dict(cfg),
-        "today": day,
+        "today": today,
         "job": job,
         "days": list_days(cfg.archive_root),
-        "results": list_day(cfg.archive_root, day),
+        "results": list_range(cfg.archive_root, start, end),
+        "view_start": start.isoformat(),
+        "view_end": end.isoformat(),
     }
 
 
@@ -174,11 +190,10 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             qs = parse_qs(parsed.query)
             cfg = load_config()
-            day = (qs.get("date") or [_today(cfg)])[0]
-            payload = _state_payload()
-            payload["results"] = list_day(cfg.archive_root, day)
-            payload["view_date"] = day
-            self._send(*_json_bytes(payload))
+            today = _today(cfg)
+            start = _parse_day((qs.get("start") or qs.get("date_start") or [None])[0], today)
+            end = _parse_day((qs.get("end") or qs.get("date_end") or [start])[0], start)
+            self._send(*_json_bytes(_state_payload(start, end)))
             return
         if path == "/api/infer-imap":
             qs = parse_qs(parsed.query)
@@ -249,9 +264,17 @@ class AppHandler(BaseHTTPRequestHandler):
         elif kind == "imap":
             if not imap_credentials_ready(cfg):
                 raise ValueError("请先填写邮箱和授权码，点「保存」后再开始")
-            day_s = data.get("date") or _today(cfg)
-            day = date.fromisoformat(day_s)
-            RUNNER.start("imap", lambda: run_imap(cfg, day))
+            today = _today(cfg)
+            start_s = str(data.get("date_start") or data.get("start") or data.get("date") or today)
+            end_s = str(data.get("date_end") or data.get("end") or start_s)
+            try:
+                start = date.fromisoformat(start_s)
+                end = date.fromisoformat(end_s)
+            except ValueError as exc:
+                raise ValueError(f"日期格式错误，应为 YYYY-MM-DD: {exc}") from exc
+            if start > end:
+                start, end = end, start
+            RUNNER.start("imap", lambda: run_imap(cfg, start, end))
         else:
             raise ValueError("未知操作")
         self._send(*_json_bytes({"ok": True, "job": RUNNER.state.snapshot()}))

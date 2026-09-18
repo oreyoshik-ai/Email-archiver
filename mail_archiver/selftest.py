@@ -3,7 +3,7 @@
 import logging
 import tempfile
 import zipfile
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from email.message import EmailMessage
 from email.utils import format_datetime, formataddr, make_msgid
 from pathlib import Path
@@ -272,11 +272,56 @@ def _check_empty_day_filter() -> None:
     LOG.info("空日期防误导检查通过")
 
 
+def _check_range_filter() -> None:
+    """回归：区间归档只保留 INTERNALDATE 落在 [start,end] 内的邮件。"""
+    from datetime import date, timezone, timedelta
+    from mail_archiver.config import ImapConfig
+    from mail_archiver.imap_client import ImapSource
+
+    class FakeConn:
+        def __init__(self, internaldate_resp):
+            self._internaldate = internaldate_resp
+
+        def select(self, folder, readonly=True):
+            return ("OK", [b"1"])
+
+        def uid(self, command, *args):
+            if command == "FETCH":
+                return ("OK", self._internaldate)
+            return ("NO", None)
+
+        def logout(self):
+            pass
+
+    tz = timezone(timedelta(hours=8))
+    # 5 封：边界前 / 起点 / 中间 / 终点 / 边界后
+    internaldate_resp = [
+        b"1 (UID 1 INTERNALDATE \"14-Sep-2026 10:00:00 +0800\")",
+        b"2 (UID 2 INTERNALDATE \"15-Sep-2026 10:00:00 +0800\")",
+        b"3 (UID 3 INTERNALDATE \"16-Sep-2026 23:59:00 +0800\")",
+        b"4 (UID 4 INTERNALDATE \"17-Sep-2026 00:01:00 +0800\")",
+        b"5 (UID 5 INTERNALDATE \"18-Sep-2026 10:00:00 +0800\")",
+        b")",
+    ]
+    conn = FakeConn(internaldate_resp)
+    src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
+    src.conn = conn
+    kept = src._filter_in_range(["1", "2", "3", "4", "5"], date(2026, 9, 15), date(2026, 9, 17), tz)
+    assert kept == ["2", "3", "4"], f"区间 9-15~9-17 应只留 2/3/4，实际 {kept}"
+    # 单日等价：start==end 只留当天
+    kept_day = src._filter_in_range(["1", "2", "3", "4", "5"], date(2026, 9, 16), date(2026, 9, 16), tz)
+    assert kept_day == ["3"], f"单日 9-16 应只留 3，实际 {kept_day}"
+    # 空区间：无候选
+    assert src._filter_in_range([], date(2026, 9, 1), date(2026, 9, 10), tz) == []
+    LOG.info("区间筛选检查通过")
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
     _check_summarize_note()
     _check_empty_day_filter()
+    _check_range_filter()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
@@ -359,6 +404,21 @@ def run_self_test(verbose: bool = False) -> int:
             raise AssertionError("日报缺少发件人")
         if "张三" not in daily or "李四" not in daily:
             raise AssertionError("日报缺少发件人姓名")
+
+        # 区间聚合：样例全部落在 2026-09-16，区间应命中、空区间应返回 0
+        from mail_archiver.results import list_range
+
+        hit = list_range(archive_root, date(2026, 9, 15), date(2026, 9, 17))
+        if len(hit) != saved:
+            raise AssertionError(f"区间 9-15~9-17 应聚合 {saved} 封，实际 {len(hit)}")
+        empty = list_range(archive_root, date(2026, 9, 18), date(2026, 9, 20))
+        if empty:
+            raise AssertionError(f"空区间应返回 0 封，实际 {len(empty)}")
+        # start>end 时内部自动交换，结果应等价
+        swapped = list_range(archive_root, date(2026, 9, 17), date(2026, 9, 15))
+        if len(swapped) != len(hit):
+            raise AssertionError("start>end 交换后结果应与正向一致")
+        LOG.info("区间聚合检查通过")
 
         LOG.info("self-test 通过：导入 %s 封，去重跳过 %s 封，目录结构与解压安全检查均正常", saved, len(raws))
         print(f"self-test 通过。样例归档位置（即将随临时目录删除）: {archive_root}")

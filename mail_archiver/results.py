@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -28,6 +28,19 @@ def list_day(archive_root: Path, day: date | str) -> list[dict]:
                 "relative": folder.relative_to(archive_root).as_posix(),
             }
         )
+    items.sort(key=lambda row: row.get("date") or "", reverse=True)
+    return items
+
+
+def list_range(archive_root: Path, start: date, end: date) -> list[dict]:
+    """聚合 [start, end] 闭区间内各天已归档邮件。"""
+    items: list[dict] = []
+    if start > end:
+        start, end = end, start
+    day = start
+    while day <= end:
+        items.extend(list_day(archive_root, day))
+        day += timedelta(days=1)
     items.sort(key=lambda row: row.get("date") or "", reverse=True)
     return items
 

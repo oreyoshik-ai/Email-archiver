@@ -103,27 +103,34 @@ class ImapSource:
         self.close()
 
     def fetch_on_date(self, day: date, tz=None) -> Iterator[tuple[bytes, datetime | None]]:
+        """归档单日（等价于 fetch_in_range(day, day)）。"""
+        yield from self.fetch_in_range(day, day, tz)
+
+    def fetch_in_range(self, start: date, end: date, tz=None) -> Iterator[tuple[bytes, datetime | None]]:
+        """归档 [start, end] 闭区间内所有邮件。
+
+        一次 SEARCH SINCE start BEFORE end+1 取候选 UID，再用 INTERNALDATE 二次校验落在区间内，
+        避免服务端 SEARCH 不可靠（个别邮箱空范围会返回整箱）。
+        """
         if self.conn is None:
             raise ImapError("IMAP 未连接")
         typ, _ = self.conn.select(self.cfg.folder, readonly=True)
         if typ != "OK":
             raise ImapError(f"无法打开文件夹 {self.cfg.folder}")
 
-        candidates = self._search_uids(day)
-        LOG.info("日期 %s 在 %s 中初筛到 %s 封", day.isoformat(), self.cfg.folder, len(candidates))
-        uids = self._filter_by_internal_date(candidates, day, tz)
-        LOG.info("按 INTERNALDATE 校验后 %s 当日实有 %s 封", day.isoformat(), len(uids))
+        candidates = self._search_range(start, end)
+        LOG.info("%s~%s 在 %s 中初筛到 %s 封", start.isoformat(), end.isoformat(), self.cfg.folder, len(candidates))
+        uids = self._filter_in_range(candidates, start, end, tz)
+        LOG.info("按 INTERNALDATE 校验后 %s~%s 实有 %s 封", start.isoformat(), end.isoformat(), len(uids))
         for uid in uids:
             raw, internal = self._fetch_uid(uid)
             if raw:
                 yield raw, internal
 
-    def _search_uids(self, day: date) -> list[str]:
+    def _search_range(self, start: date, end: date) -> list[str]:
         assert self.conn is not None
-        day_s = imap_date(day)
-        # 只用严格的 SINCE/BEFORE 区间。ON 在部分邮箱（如 163）上不可靠，
-        # 当日无邮件时会把整箱邮件都返回，导致误导出全部。
-        query = f"(SINCE {day_s} BEFORE {imap_date(day + timedelta(days=1))})"
+        # 严格 SINCE start BEFORE end+1 区间。ON 不可靠（个别邮箱空范围会返回整箱）。
+        query = f"(SINCE {imap_date(start)} BEFORE {imap_date(end + timedelta(days=1))})"
         try:
             typ, data = self.conn.uid("SEARCH", None, query)
         except Exception as exc:
@@ -136,8 +143,8 @@ class ImapSource:
             return []
         return token.decode("ascii", errors="ignore").split()
 
-    def _filter_by_internal_date(self, uids: list[str], day: date, tz=None) -> list[str]:
-        """服务端 SEARCH 不可靠（个别邮箱空日期会返回整箱），用 INTERNALDATE 二次校验，只留当日的。"""
+    def _filter_in_range(self, uids: list[str], start: date, end: date, tz=None) -> list[str]:
+        """服务端 SEARCH 不可靠，用 INTERNALDATE 二次校验，只留落在 [start, end] 的。"""
         if not uids:
             return []
         dated = self._fetch_internaldates(uids)
@@ -147,10 +154,10 @@ class ImapSource:
             if internal is None:
                 continue
             received_day = to_tz(internal, tz).date() if tz is not None else internal.date()
-            if received_day == day:
+            if start <= received_day <= end:
                 kept.append(uid)
             else:
-                LOG.debug("UID %s INTERNALDATE 为 %s，非 %s，跳过", uid, received_day, day)
+                LOG.debug("UID %s INTERNALDATE 为 %s，不在 %s~%s，跳过", uid, received_day, start, end)
         return kept
 
     def _fetch_internaldates(self, uids: list[str]) -> dict[str, datetime]:

@@ -176,6 +176,14 @@
       font-weight: 650;
     }
     .cal-grid .day.selected:hover { background: var(--accent-hover); }
+    .cal-grid .day.in-range { background: #e8f0fa; color: var(--ink); }
+    .cal-grid .day.in-range:hover { background: #d6e6f6; }
+    .cal-grid .day.range-start, .cal-grid .day.range-end {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 650;
+    }
+    .cal-grid .day.range-start:hover, .cal-grid .day.range-end:hover { background: var(--accent-hover); }
     input[readonly] {
       color: var(--muted);
       cursor: default;
@@ -305,9 +313,9 @@
         <button type="button" id="open-root">查看</button>
       </div>
       <p class="hint">可以自己改路径，或点「打开文件夹」弹出窗口挑选。点「查看」会打开这个位置。</p>
-      <label for="date" id="date-label" style="cursor:pointer">整理哪一天</label>
+      <label for="date" id="date-label" style="cursor:pointer">整理日期（可单日或区间，点两个日期选区间）</label>
       <div class="date-wrap" id="date-wrap">
-        <input id="date" type="text" readonly placeholder="选择日期" />
+        <input id="date" type="text" readonly placeholder="点选单日或区间" />
         <div class="calendar" id="calendar" hidden></div>
       </div>
     </section>
@@ -363,13 +371,15 @@
       $("log").scrollTop = $("log").scrollHeight;
     }
 
-    function renderResults(items, viewDate) {
+    function renderResults(items, start, end) {
       const box = $("results");
+      const label = (start && end && start !== end) ? (start + " ~ " + end) : (start || "");
       $("counts").textContent = items && items.length
-        ? (viewDate || "") + " · " + items.length + " 封"
-        : "";
+        ? label + " · " + items.length + " 封"
+        : (label ? label + " · 0 封" : "");
       if (!items || !items.length) {
-        box.innerHTML = '<p class="empty">这一天还没有整理记录。填好邮箱后点「开始整理」。</p>';
+        const when = (start && end && start !== end) ? "这段时间" : "这一天";
+        box.innerHTML = `<p class="empty">${when}还没有整理记录。填好邮箱后点「开始整理」。</p>`;
         return;
       }
       const rows = items.map((item) => {
@@ -400,13 +410,52 @@
     }
 
     function formPayload() {
+      const start = rangeStart ? fmtDate(rangeStart) : "";
+      const end = rangeEnd ? fmtDate(rangeEnd) : start;
       return {
         username: $("username").value.trim(),
         auth_code: $("auth").value,
         archive_root: $("archive").value.trim(),
         host: $("imap-host").value.trim(),
-        date: $("date").value,
+        date_start: start,
+        date_end: end || start,
       };
+    }
+
+    // --- 日期区间选择状态 ---
+    let rangeStart = null; // Date，起点
+    let rangeEnd = null;   // Date 或 null（只点了起点）
+
+    function parseDate(s) {
+      if (!s) return null;
+      const [y, m, d] = s.split("-").map(Number);
+      return new Date(y, m - 1, d);
+    }
+    function fmtDate(dt) {
+      return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+    }
+    function dateTs(dt) { return dt.getTime(); }
+    function inRange(dt) {
+      if (!rangeStart) return false;
+      const s = dateTs(rangeStart);
+      const e = rangeEnd ? dateTs(rangeEnd) : s;
+      const t = dateTs(dt);
+      return t >= Math.min(s, e) && t <= Math.max(s, e);
+    }
+    function isStart(dt) { return rangeStart && dateTs(dt) === dateTs(rangeStart); }
+    function isEnd(dt) { return rangeEnd && dateTs(dt) === dateTs(rangeEnd); }
+    function dateInputText() {
+      if (!rangeStart) return "";
+      const s = fmtDate(rangeStart);
+      if (!rangeEnd || dateTs(rangeEnd) === dateTs(rangeStart)) return s;
+      return s + " ~ " + fmtDate(rangeEnd);
+    }
+    function updateRunLabel() {
+      const btn = $("run-imap");
+      if (!btn) return;
+      btn.textContent = (rangeStart && rangeEnd && dateTs(rangeStart) !== dateTs(rangeEnd))
+        ? "开始整理这段时间的邮件"
+        : "开始整理这一天的邮件";
     }
 
     let inferTimer = null;
@@ -474,16 +523,24 @@
     });
 
     async function refresh() {
-      const date = $("date").value;
-      const data = await api("/api/state?date=" + encodeURIComponent(date || ""));
+      const start = rangeStart ? fmtDate(rangeStart) : "";
+      const end = rangeEnd ? fmtDate(rangeEnd) : (start || "");
+      const qs = start ? ("start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end || start)) : "";
+      const data = await api("/api/state" + (qs ? "?" + qs : ""));
       const cfg = data.config || {};
+      // 首次加载还没选区间时，默认当天（单日）
+      if (!rangeStart && data.today) {
+        rangeStart = parseDate(data.today);
+        rangeEnd = rangeStart;
+        $("date").value = dateInputText();
+        updateRunLabel();
+      }
       if (document.activeElement !== $("username") && cfg.username) $("username").value = cfg.username;
       if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
-      if (!$("date").value && data.today) $("date").value = data.today;
       // 邮箱识别 + 按邮箱带入已存授权码（由 maybeFillAuth 处理）
       inferImap();
       renderJob(data.job);
-      renderResults(data.results || [], data.view_date || data.today);
+      renderResults(data.results || [], data.view_start, data.view_end);
       toggleBusy(!!(data.job && data.job.running));
       if (data.job && data.job.running) startPolling();
       return data;
@@ -570,6 +627,7 @@
         await saveIfNeeded();
         const payload = formPayload();
         if (!payload.username) throw new Error("请填写邮箱账号");
+        if (!payload.date_start) throw new Error("请选择日期");
         await api("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -614,26 +672,33 @@
       }
     });
 
-    $("date").addEventListener("change", () => refresh().catch((err) => setStatus(err.message, "err")));
-
     // --- custom calendar ---
     const calEl = $("calendar");
     const dateInput = $("date");
     let calYear, calMonth;
     const DOW = ["日", "一", "二", "三", "四", "五", "六"];
 
-    function parseDate(s) {
-      if (!s) return null;
-      const [y, m, d] = s.split("-").map(Number);
-      return new Date(y, m - 1, d);
-    }
-    function fmtDate(dt) {
-      return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+    // 点两个日期选区间；点同一天即单日；已选完整区间后再次点击则重新开始
+    function pickDay(dt) {
+      if (!rangeStart || (rangeStart && rangeEnd)) {
+        rangeStart = dt;
+        rangeEnd = null;
+      } else {
+        if (dateTs(dt) < dateTs(rangeStart)) {
+          rangeEnd = rangeStart;
+          rangeStart = dt;
+        } else {
+          rangeEnd = dt;
+        }
+      }
+      dateInput.value = dateInputText();
+      updateRunLabel();
+      renderCalendar();
+      if (rangeEnd) refresh().catch((err) => setStatus(err.message, "err"));
     }
 
     function renderCalendar() {
       const today = new Date();
-      const selected = parseDate(dateInput.value);
       const firstDay = new Date(calYear, calMonth, 1);
       const lastDay = new Date(calYear, calMonth + 1, 0).getDate();
       const startCol = firstDay.getDay();
@@ -652,8 +717,10 @@
       for (let d = 1; d <= lastDay; d++) {
         const dt = new Date(calYear, calMonth, d);
         let cls = "day";
-        if (selected && dt.getTime() === selected.getTime()) cls += " selected";
-        else if (dt.toDateString() === today.toDateString()) cls += " today";
+        if (inRange(dt)) cls += " in-range";
+        if (isStart(dt)) cls += " range-start";
+        if (isEnd(dt)) cls += " range-end";
+        if (cls === "day" && dt.toDateString() === today.toDateString()) cls += " today";
         html += `<span class="${cls}" data-day="${d}">${d}</span>`;
       }
       const totalCells = startCol + lastDay;
@@ -670,21 +737,18 @@
       $("cal-next").addEventListener("click", () => {
         calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendar();
       });
-      calEl.querySelectorAll(".day[data-day]").forEach(el => {
+      calEl.querySelectorAll(".day[data-day]").forEach((el) => {
         el.addEventListener("click", () => {
           const d = Number(el.dataset.day);
-          dateInput.value = fmtDate(new Date(calYear, calMonth, d));
-          closeCalendar();
-          refresh().catch(err => setStatus(err.message, "err"));
+          pickDay(new Date(calYear, calMonth, d));
         });
       });
     }
 
     function openCalendar() {
-      const sel = parseDate(dateInput.value);
-      const now = new Date();
-      calYear = sel ? sel.getFullYear() : now.getFullYear();
-      calMonth = sel ? sel.getMonth() : now.getMonth();
+      const sel = rangeStart || new Date();
+      calYear = sel.getFullYear();
+      calMonth = sel.getMonth();
       calEl.hidden = false;
       renderCalendar();
     }

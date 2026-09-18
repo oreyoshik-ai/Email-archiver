@@ -34,19 +34,25 @@ def _make_archiver(cfg: AppConfig) -> MailArchiver:
     return archiver
 
 
-def run_imap(cfg: AppConfig, day: date) -> ArchiveResult:
+def run_imap(cfg: AppConfig, start: date, end: date) -> ArchiveResult:
     tz = resolve_timezone(cfg.timezone)
     archiver = _make_archiver(cfg)
     result = ArchiveResult()
-    LOG.info("开始收取 %s 的收件箱（%s）", day.isoformat(), cfg.imap.username)
+    if start == end:
+        LOG.info("开始收取 %s 的收件箱（%s）", start.isoformat(), cfg.imap.username)
+    else:
+        LOG.info("开始收取 %s~%s 的收件箱（%s）", start.isoformat(), end.isoformat(), cfg.imap.username)
     found = False
     with ImapSource(cfg.imap) as client:
-        for raw, internal in client.fetch_on_date(day, tz):
+        for raw, internal in client.fetch_in_range(start, end, tz):
             found = True
             received = to_tz(internal, tz) if internal else None
             consume(archiver, result, raw, received=received)
     if not found:
-        result.note = f"{day.isoformat()} 当日收件箱没有邮件，已停止，未导出任何内容。"
+        if start == end:
+            result.note = f"{start.isoformat()} 当日收件箱没有邮件，已停止，未导出任何内容。"
+        else:
+            result.note = f"{start.isoformat()}~{end.isoformat()} 这段时间收件箱没有邮件，已停止，未导出任何内容。"
     return result
 
 
