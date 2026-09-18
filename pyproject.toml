@@ -1,7 +1,7 @@
 ﻿[project]
 name = "mail-archiver"
 version = "1.0.0"
-description = "跨平台邮件归档管理系统工具：从 163 IMAP 或本地 eml/mbox 按日期/发件人落盘"
+description = "跨平台邮件归档管理系统工具：从 IMAP 邮箱或本地 eml/mbox 按日期/发件人落盘"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = []

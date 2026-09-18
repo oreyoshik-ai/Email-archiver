@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from mail_archiver.config import (
     AppConfig,
     config_public_dict,
+    infer_imap_info,
     imap_credentials_ready,
     load_config,
     save_config,
@@ -178,6 +179,11 @@ class AppHandler(BaseHTTPRequestHandler):
             payload["view_date"] = day
             self._send(*_json_bytes(payload))
             return
+        if path == "/api/infer-imap":
+            qs = parse_qs(parsed.query)
+            username = (qs.get("username") or [""])[0]
+            self._send(*_json_bytes(infer_imap_info(username)))
+            return
         if path == "/api/job":
             self._send(*_json_bytes(RUNNER.state.snapshot()))
             return
@@ -223,6 +229,7 @@ class AppHandler(BaseHTTPRequestHandler):
             username=str(data.get("username") or ""),
             auth_code=data.get("auth_code"),
             archive_root=str(data.get("archive_root") or ""),
+            host=str(data.get("host") or ""),
         )
         self._send(*_json_bytes({"ok": True, "config": config_public_dict(cfg)}))
 
@@ -234,7 +241,7 @@ class AppHandler(BaseHTTPRequestHandler):
             RUNNER.start("demo", lambda: run_demo(cfg))
         elif kind == "imap":
             if not imap_credentials_ready(cfg):
-                raise ValueError("请先填写 163 邮箱和授权码，点「保存」后再开始")
+                raise ValueError("请先填写邮箱和授权码，点「保存」后再开始")
             day_s = data.get("date") or _today(cfg)
             day = date.fromisoformat(day_s)
             RUNNER.start("imap", lambda: run_imap(cfg, day))
@@ -288,11 +295,14 @@ class AppHandler(BaseHTTPRequestHandler):
         username = str(data.get("username") or "").strip()
         archive_root = str(data.get("archive_root") or "").strip()
         auth_code = data.get("auth_code")
-        if username or archive_root or auth_code:
+        host = str(data.get("host") or "").strip()
+        if username or archive_root or auth_code or host:
+            current = load_config()
             return save_config(
-                username=username or load_config().imap.username,
+                username=username or current.imap.username,
                 auth_code=auth_code,
-                archive_root=archive_root or str(load_config().archive_root),
+                archive_root=archive_root or str(current.archive_root),
+                host=host,
             )
         return load_config()
 

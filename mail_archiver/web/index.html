@@ -263,24 +263,27 @@
   <main>
     <header>
       <h1>邮件归档管理系统</h1>
-      <p>把客户发到 163 的邮件，按「日期 → 客户邮箱 → 每一封」整理到文件夹。填一次，以后每天点一下就行。</p>
+      <p>把客户发来的邮件，按「日期 → 客户邮箱 → 每一封」整理到文件夹。填一次，以后每天点一下就行。</p>
     </header>
 
     <section class="card">
       <p class="step">第 1 步 · 你的邮箱</p>
-      <label for="username">163 邮箱账号</label>
-      <input id="username" type="text" autocomplete="username" placeholder="例如 name@163.com" />
+      <label for="username">邮箱账号</label>
+      <input id="username" type="text" autocomplete="username" placeholder="例如 name@163.com 或 name@qq.com" />
+      <p class="hint" id="imap-hint">输入邮箱后会自动识别服务商与 IMAP 服务器。</p>
+      <label for="imap-host">IMAP 服务器（可选，留空自动识别）</label>
+      <input id="imap-host" type="text" spellcheck="false" placeholder="自动识别，如 imap.qq.com" />
       <label for="auth">授权码（不是邮箱登录密码）</label>
       <div class="row">
-        <input id="auth" type="password" autocomplete="off" placeholder="在 163 网页邮箱里生成" />
+        <input id="auth" type="password" autocomplete="off" placeholder="在邮箱网页设置里生成授权码" />
         <button type="button" id="toggle-auth">显示</button>
       </div>
       <details>
-        <summary>授权码怎么拿？点这里看 4 步</summary>
+        <summary>授权码怎么拿？点这里看步骤</summary>
         <ol>
-          <li>浏览器打开 mail.163.com 并登录。</li>
-          <li>进入「设置」→「POP3/SMTP/IMAP」。</li>
-          <li>开启 IMAP/SMTP，再点「生成授权码」，按提示发短信。</li>
+          <li>浏览器打开你的邮箱网页版并登录。</li>
+          <li>进入「设置」→「POP3/SMTP/IMAP」（QQ 邮箱在「设置」→「账户」）。</li>
+          <li>开启 IMAP/SMTP 服务，点「生成授权码」或「生成应用专用密码」（Gmail 需先开两步验证）。</li>
           <li>把生成的一串字符粘贴到上面。以后不用重复填，除非你重新生成了授权码。</li>
         </ol>
       </details>
@@ -310,7 +313,7 @@
         <button type="button" id="pick-files">导入电脑里的邮件</button>
         <input id="file-input" class="hidden-file" type="file" multiple accept=".eml,.mbox,.emlx" />
       </div>
-      <p class="hint">示例不连邮箱，会用软件自带的 4 封假邮件演示效果。真正收信请点蓝色按钮。</p>
+      <p class="hint">示例不连邮箱，会用软件自带的 5 封假邮件演示效果。真正收信请点蓝色按钮。</p>
       <p class="status" id="status"></p>
       <pre class="log" id="log">等待开始…</pre>
     </section>
@@ -394,9 +397,38 @@
         username: $("username").value.trim(),
         auth_code: $("auth").value,
         archive_root: $("archive").value.trim(),
+        host: $("imap-host").value.trim(),
         date: $("date").value,
       };
     }
+
+    let inferTimer = null;
+    function inferImap() {
+      const username = $("username").value.trim();
+      const hint = $("imap-hint");
+      const hostInput = $("imap-host");
+      if (!username) {
+        hint.textContent = "输入邮箱后会自动识别服务商与 IMAP 服务器。";
+        hostInput.placeholder = "自动识别，如 imap.qq.com";
+        return;
+      }
+      fetch("/api/infer-imap?username=" + encodeURIComponent(username))
+        .then((r) => r.json())
+        .then((info) => {
+          if (info.known) {
+            hint.textContent = "✓ 检测到 " + info.provider + " · IMAP 服务器 " + info.host;
+            hostInput.placeholder = "自动识别：" + info.host;
+          } else {
+            hint.textContent = "⚠ 未识别该邮箱，请在下方填写 IMAP 服务器（如 imap.example.com）。";
+            hostInput.placeholder = "需手动填写，如 imap.example.com";
+          }
+        })
+        .catch(() => {});
+    }
+    $("username").addEventListener("input", () => {
+      clearTimeout(inferTimer);
+      inferTimer = setTimeout(inferImap, 250);
+    });
 
     async function refresh() {
       const date = $("date").value;
@@ -406,6 +438,11 @@
       if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
       if (!$("date").value && data.today) $("date").value = data.today;
       if (cfg.auth_code_set && !$("auth").value) $("auth").placeholder = "已保存，一般不用再填";
+      const hostInput = $("imap-host");
+      if (document.activeElement !== hostInput) {
+        hostInput.value = (cfg.host && cfg.host !== cfg.auto_host) ? cfg.host : "";
+      }
+      inferImap();
       renderJob(data.job);
       renderResults(data.results || [], data.view_date || data.today);
       toggleBusy(!!(data.job && data.job.running));
@@ -493,7 +530,7 @@
       try {
         await saveIfNeeded();
         const payload = formPayload();
-        if (!payload.username) throw new Error("请填写 163 邮箱账号");
+        if (!payload.username) throw new Error("请填写邮箱账号");
         await api("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

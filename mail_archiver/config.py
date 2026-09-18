@@ -36,17 +36,45 @@ class AppConfig:
     config_path: Path | None = None
 
 
-HOST_BY_DOMAIN = {
-    "163.com": "imap.163.com",
-    "126.com": "imap.126.com",
-    "yeah.net": "imap.yeah.net",
-    "qq.com": "imap.qq.com",
-    "foxmail.com": "imap.qq.com",
-    "gmail.com": "imap.gmail.com",
-    "outlook.com": "outlook.office365.com",
-    "hotmail.com": "outlook.office365.com",
-    "live.com": "outlook.office365.com",
+# 邮箱后缀 → (服务商名称, IMAP 主机)。新增邮箱在此追加即可。
+DOMAIN_INFO: dict[str, tuple[str, str]] = {
+    # 网易
+    "163.com": ("网易 163 邮箱", "imap.163.com"),
+    "126.com": ("网易 126 邮箱", "imap.126.com"),
+    "yeah.net": ("网易 yeah 邮箱", "imap.yeah.net"),
+    # 腾讯
+    "qq.com": ("QQ 邮箱", "imap.qq.com"),
+    "foxmail.com": ("Foxmail 邮箱", "imap.qq.com"),
+    "vip.qq.com": ("QQ VIP 邮箱", "imap.qq.com"),
+    "exmail.qq.com": ("腾讯企业邮箱", "imap.exmail.qq.com"),
+    # 谷歌
+    "gmail.com": ("Gmail", "imap.gmail.com"),
+    "googlemail.com": ("Gmail", "imap.gmail.com"),
+    # 微软
+    "outlook.com": ("Outlook", "outlook.office365.com"),
+    "hotmail.com": ("Hotmail", "outlook.office365.com"),
+    "live.com": ("Live", "outlook.office365.com"),
+    "msn.com": ("MSN", "outlook.office365.com"),
+    # 苹果
+    "icloud.com": ("iCloud 邮箱", "imap.mail.me.com"),
+    "me.com": ("iCloud 邮箱", "imap.mail.me.com"),
+    "mac.com": ("iCloud 邮箱", "imap.mail.me.com"),
+    # 新浪
+    "sina.com": ("新浪邮箱", "imap.sina.com"),
+    "sina.cn": ("新浪邮箱", "imap.sina.com"),
+    # 阿里
+    "aliyun.com": ("阿里云邮箱", "imap.aliyun.com"),
+    # 中国移动 / 电信
+    "139.com": ("139 邮箱", "imap.139.com"),
+    "189.cn": ("189 邮箱", "imap.189.cn"),
+    # 其它
+    "sohu.com": ("搜狐邮箱", "imap.sohu.com"),
+    "tom.com": ("Tom 邮箱", "imap.tom.com"),
+    "yahoo.com": ("Yahoo 邮箱", "imap.mail.yahoo.com"),
 }
+
+# 兼容旧调用：域名 → IMAP 主机
+HOST_BY_DOMAIN = {domain: host for domain, (_name, host) in DOMAIN_INFO.items()}
 
 
 def project_root() -> Path:
@@ -62,11 +90,26 @@ def default_archive_root() -> Path:
     return home / "Desktop" / "邮件归档"
 
 
+def infer_imap_info(username: str, fallback: str = "imap.163.com") -> dict:
+    """根据邮箱地址推断 IMAP 服务商与主机。
+
+    返回 ``{"provider", "host", "known", "domain"}``。``known=False`` 表示
+    该域名不在内置表里，``host`` 取 ``fallback``，需用户手动填写 IMAP 服务器。
+    """
+    name = (username or "").strip()
+    if "@" not in name:
+        return {"provider": "", "host": fallback, "known": False, "domain": ""}
+    domain = name.rsplit("@", 1)[-1].strip().lower()
+    info = DOMAIN_INFO.get(domain)
+    if info:
+        provider, host = info
+        return {"provider": provider, "host": host, "known": True, "domain": domain}
+    return {"provider": "", "host": fallback, "known": False, "domain": domain}
+
+
 def infer_imap_host(username: str, fallback: str = "imap.163.com") -> str:
-    if "@" not in (username or ""):
-        return fallback
-    domain = username.rsplit("@", 1)[-1].strip().lower()
-    return HOST_BY_DOMAIN.get(domain, fallback)
+    """仅返回 IMAP 主机，保留给旧调用方用。"""
+    return infer_imap_info(username, fallback)["host"]
 
 
 def default_config_candidates(explicit: str | None = None) -> list[Path]:
@@ -147,12 +190,15 @@ def imap_credentials_ready(cfg: AppConfig) -> bool:
 
 
 def config_public_dict(cfg: AppConfig) -> dict:
+    info = infer_imap_info(cfg.imap.username)
     return {
         "archive_root": str(cfg.archive_root),
         "timezone": cfg.timezone,
         "username": "" if not cfg.imap.username or cfg.imap.username.startswith("yourname") else cfg.imap.username,
         "auth_code_set": imap_credentials_ready(cfg),
         "host": cfg.imap.host,
+        "auto_host": info["host"],
+        "provider": info["provider"],
         "folder": cfg.imap.folder,
         "ready": imap_credentials_ready(cfg),
         "config_path": str(cfg.config_path) if cfg.config_path else "",
@@ -166,8 +212,10 @@ def save_config(
     archive_root: str,
     timezone: str = "Asia/Shanghai",
     folder: str = "INBOX",
+    host: str | None = None,
     dest: Path | None = None,
 ) -> AppConfig:
+    """保存配置。``host`` 留空或为 ``"auto"`` 时按邮箱地址自动推断 IMAP 主机。"""
     dest = dest or (project_root() / LOCAL_NAME)
     current = load_config(str(dest) if dest.is_file() else None)
     username = (username or "").strip()
@@ -181,12 +229,16 @@ def save_config(
     if not new_auth or new_auth == "********":
         new_auth = current.imap.auth_code if current.config_path else ""
 
+    resolved_host = (host or "").strip()
+    if not resolved_host or resolved_host.lower() == "auto":
+        resolved_host = infer_imap_host(username, current.imap.host or "imap.163.com")
+
     payload = {
         "archive_root": str(archive_path),
         "timezone": timezone or current.timezone or "Asia/Shanghai",
         "imap": {
             "enabled": True,
-            "host": infer_imap_host(username, current.imap.host or "imap.163.com"),
+            "host": resolved_host,
             "port": 993,
             "ssl": True,
             "username": username,

@@ -149,10 +149,58 @@ def _must_exist(path: Path) -> None:
         raise AssertionError(f"缺少文件: {path}")
 
 
+def _check_infer() -> None:
+    """校验邮箱地址 → IMAP 服务商推断。"""
+    from mail_archiver.config import infer_imap_host, infer_imap_info
+
+    cases = {
+        "name@163.com": ("网易 163 邮箱", "imap.163.com", True),
+        "name@126.com": ("网易 126 邮箱", "imap.126.com", True),
+        "name@qq.com": ("QQ 邮箱", "imap.qq.com", True),
+        "name@foxmail.com": ("Foxmail 邮箱", "imap.qq.com", True),
+        "name@gmail.com": ("Gmail", "imap.gmail.com", True),
+        "name@outlook.com": ("Outlook", "outlook.office365.com", True),
+        "name@sina.com": ("新浪邮箱", "imap.sina.com", True),
+        "name@aliyun.com": ("阿里云邮箱", "imap.aliyun.com", True),
+        "name@unknown.tld": ("", "imap.163.com", False),
+    }
+    for email, (provider, host, known) in cases.items():
+        info = infer_imap_info(email)
+        assert info["provider"] == provider, f"{email} provider 期望 {provider}，实际 {info['provider']}"
+        assert info["host"] == host, f"{email} host 期望 {host}，实际 {info['host']}"
+        assert info["known"] is known, f"{email} known 期望 {known}，实际 {info['known']}"
+    assert infer_imap_info("no-atmark")["known"] is False
+    assert infer_imap_host("name@unknown.tld", fallback="imap.custom.com") == "imap.custom.com"
+    LOG.info("邮箱识别检查通过")
+
+
+def _check_save_config(tmp_path: Path) -> None:
+    """校验 save_config 的 host 自动推断与手动覆盖。"""
+    from mail_archiver.config import save_config
+
+    dest = tmp_path / "config.local.json"
+    arc = str(tmp_path / "arc")
+    # 不传 host：按邮箱自动推断
+    cfg = save_config(username="name@qq.com", auth_code="CODE", archive_root=arc, dest=dest)
+    assert cfg.imap.host == "imap.qq.com", f"自动推断应为 imap.qq.com，实际 {cfg.imap.host}"
+    # 手动覆盖 host
+    cfg2 = save_config(username="name@qq.com", auth_code="CODE", archive_root=arc, host="imap.custom.com", dest=dest)
+    assert cfg2.imap.host == "imap.custom.com", f"手动覆盖未生效，实际 {cfg2.imap.host}"
+    # 切换邮箱且不传 host：重新推断
+    cfg3 = save_config(username="name@163.com", auth_code="CODE", archive_root=arc, dest=dest)
+    assert cfg3.imap.host == "imap.163.com", f"切换邮箱后应重新推断，实际 {cfg3.imap.host}"
+    # host=auto 哨兵也应触发推断
+    cfg4 = save_config(username="name@gmail.com", auth_code="CODE", archive_root=arc, host="auto", dest=dest)
+    assert cfg4.imap.host == "imap.gmail.com", f"auto 哨兵应触发推断，实际 {cfg4.imap.host}"
+    LOG.info("配置保存与 host 推断检查通过")
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
+    _check_infer()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
+        _check_save_config(tmp_path)
         sample = build_sample_dir(tmp_path)
         archive_root = tmp_path / "archive"
         cfg = AppConfig(
@@ -234,5 +282,5 @@ def run_self_test(verbose: bool = False) -> int:
 
         LOG.info("self-test 通过：导入 %s 封，去重跳过 %s 封，目录结构与解压安全检查均正常", saved, len(raws))
         print(f"self-test 通过。样例归档位置（即将随临时目录删除）: {archive_root}")
-        print("本机 Python 可以直接使用本工具。配置 163 后运行: python -m mail_archiver")
+        print("本机 Python 可以直接使用本工具。配置邮箱后运行: python -m mail_archiver")
         return 0
