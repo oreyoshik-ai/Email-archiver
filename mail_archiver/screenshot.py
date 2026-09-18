@@ -115,11 +115,21 @@ def _build_email_html(mail: ParsedMail) -> str:
 
 def _measure_height(browser: str, html_path: Path, width: int) -> int:
     measure_html = html_path.read_text(encoding="utf-8")
+    # 等 load（图片等加载完）之后再量高度，并用 setTimeout 兜底再量一次；
+    # 同时取 body 与 documentElement 的最大值，避免漏算溢出内容。
     measure_html = measure_html.replace(
         "</body>",
-        f"""<script>
-  var h = Math.max(document.body.scrollHeight, document.body.offsetHeight);
-  document.title = 'HEIGHT:' + h;
+        """<script>
+  function _report() {
+    var h = Math.max(
+      document.body.scrollHeight, document.body.offsetHeight,
+      document.documentElement.scrollHeight, document.documentElement.offsetHeight
+    );
+    if (h > 0) document.title = 'HEIGHT:' + h;
+  }
+  if (document.readyState === 'complete') { _report(); }
+  else { window.addEventListener('load', _report); }
+  setTimeout(_report, 800);
 </script></body>""",
     )
     tmp_measure = html_path.parent / "measure.html"
@@ -130,15 +140,19 @@ def _measure_height(browser: str, html_path: Path, width: int) -> int:
         "--headless=new",
         "--disable-gpu",
         "--no-sandbox",
+        "--virtual-time-budget=3000",
         "--dump-dom",
         f"--window-size={width},100",
         str(tmp_measure),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=15, text=True)
-        match = re.search(r"HEIGHT:(\d+)", proc.stdout or "")
+        # 用字节捕获再按 UTF-8 解码：中文 Windows 默认 GBK 解码 DOM 会抛
+        # UnicodeDecodeError，导致测量始终失败、回退到固定高度而截断长邮件。
+        proc = subprocess.run(cmd, capture_output=True, timeout=20)
+        stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+        match = re.search(r"HEIGHT:(\d+)", stdout)
         if match:
-            return int(match.group(1)) + 48
+            return int(match.group(1)) + 64
     except Exception:
         pass
     return 0
