@@ -4,15 +4,21 @@ import imaplib
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 from typing import Iterator
 
 from mail_archiver.config import ImapConfig
-from mail_archiver.util import imap_date, to_tz
+from mail_archiver.util import IMAP_MONTHS, imap_date, to_tz
 
 LOG = logging.getLogger("mail_archiver")
 
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE "([^"]+)"')
+# 标准 IMAP INTERNALDATE："DD-Mon-YYYY HH:MM:SS +ZZZZ"，时间与偏移部分可缺省。
+_INTERNALDATE_FMT = re.compile(
+    r"^(\d{1,2})-([A-Za-z]{3})-(\d{4})"
+    r"(?:\s+(\d{1,2}):(\d{2}):(\d{2}))?"
+    r"(?:\s+([+-]\d{4}))?$"
+)
+_INTERNALDATE_MONTHS = {name.lower(): idx for idx, name in enumerate(IMAP_MONTHS, start=1)}
 _UID_RE = re.compile(rb"UID (\d+)")
 
 
@@ -41,16 +47,35 @@ def _send_id(conn: imaplib.IMAP4) -> None:
 
 
 def _parse_internaldate(header: bytes) -> datetime | None:
+    """解析 FETCH 响应中的 INTERNALDATE。
+
+    格式 "DD-Mon-YYYY HH:MM:SS +ZZZZ"。带偏移时返回带时区时间；不带偏移时按
+    RFC 3501 是服务器本地时间（中文邮箱即北京时间），保持 naive 返回，由调用方
+    用 to_tz 按配置时区解释——不能当 UTC 处理，否则 16:00 之后收到的邮件会被
+    错算到第二天。
+    """
     match = _INTERNALDATE_RE.search(header)
     if not match:
         return None
-    try:
-        dt = parsedate_to_datetime(match.group(1).decode("ascii", errors="replace"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
+    fmt = _INTERNALDATE_FMT.match(match.group(1).decode("ascii", errors="replace").strip())
+    if not fmt:
         return None
+    day, mon, year, hh, mi, ss, offset = fmt.groups()
+    month = _INTERNALDATE_MONTHS.get(mon.lower())
+    if month is None:
+        return None
+    try:
+        dt = datetime(int(year), month, int(day))
+        if hh is not None:
+            dt = dt.replace(hour=int(hh), minute=int(mi), second=int(ss))
+    except ValueError:
+        return None
+    if offset:
+        sign = 1 if offset[0] == "+" else -1
+        dt = dt.replace(
+            tzinfo=timezone(sign * timedelta(hours=int(offset[1:3]), minutes=int(offset[3:5])))
+        )
+    return dt
 
 
 class ImapSource:

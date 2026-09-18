@@ -316,12 +316,70 @@ def _check_range_filter() -> None:
     LOG.info("区间筛选检查通过")
 
 
+def _check_internaldate_tz() -> None:
+    """回归：INTERNALDATE 无时区偏移时按服务器本地时间（配置时区）解释。
+
+    旧实现交给 RFC 2822 解析器，无偏移格式（部分服务器返回裸值）直接解析失败，
+    邮件会被区间筛选整个丢掉；带偏移的虽然正确，但裸值当 UTC 处理会把
+    16:00 之后收到的邮件错算到第二天。
+    """
+    from mail_archiver.config import ImapConfig
+    from mail_archiver.imap_client import ImapSource, _parse_internaldate
+    from mail_archiver.util import to_tz
+
+    tz = timezone(timedelta(hours=8))
+
+    # 带偏移：解析为带时区时间
+    aware = _parse_internaldate(b'1 (UID 1 INTERNALDATE "18-Sep-2026 18:30:00 +0800")')
+    assert aware is not None and aware.utcoffset() == timedelta(hours=8), f"带偏移解析失败: {aware}"
+    # 无偏移：RFC 3501 服务器本地时间，保持 naive，由 to_tz 按配置时区解释
+    naive = _parse_internaldate(b'1 (UID 1 INTERNALDATE "18-Sep-2026 18:30:00")')
+    assert naive is not None and naive.tzinfo is None, f"无偏移应返回 naive，实际 {naive}"
+    local = to_tz(naive, tz)
+    assert (local.year, local.month, local.day) == (2026, 9, 18), (
+        f"18:30 收到的邮件应留在 9-18，实际被算到 {local.date()}"
+    )
+    assert local.hour == 18 and local.minute == 30, f"本地时间应保持 18:30，实际 {local.time()}"
+    # 省略时间部分（只有日期）也应能解析
+    day_only = _parse_internaldate(b'1 (UID 1 INTERNALDATE "18-Sep-2026")')
+    assert day_only is not None and (day_only.year, day_only.month, day_only.day) == (2026, 9, 18)
+    # 乱格式与无 INTERNALDATE 都返回 None
+    assert _parse_internaldate(b'1 (UID 1 INTERNALDATE "not-a-date")') is None
+    assert _parse_internaldate(b"no date here") is None
+
+    # 端到端：区间筛选不再丢掉无偏移的邮件
+    class FakeConn:
+        def __init__(self, resp):
+            self._resp = resp
+
+        def uid(self, command, *args):
+            if command == "FETCH":
+                return ("OK", self._resp)
+            return ("NO", None)
+
+        def logout(self):
+            pass
+
+    resp = [
+        b"1 (UID 1 INTERNALDATE \"16-Sep-2026 17:05:00\")",  # 无偏移，旧版会被丢弃
+        b"2 (UID 2 INTERNALDATE \"17-Sep-2026 09:00:00 +0800\")",
+        b"3 (UID 3 INTERNALDATE \"14-Sep-2026 23:00:00\")",  # 区间外
+        b")",
+    ]
+    src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
+    src.conn = FakeConn(resp)
+    kept = src._filter_in_range(["1", "2", "3"], date(2026, 9, 15), date(2026, 9, 17), tz)
+    assert kept == ["1", "2"], f"应保留 1/2，实际 {kept}"
+    LOG.info("INTERNALDATE 时区检查通过")
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
     _check_summarize_note()
     _check_empty_day_filter()
     _check_range_filter()
+    _check_internaldate_tz()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
