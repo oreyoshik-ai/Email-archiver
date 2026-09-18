@@ -402,13 +402,23 @@
       };
     }
 
+    let hostTouched = false;
+    let savedUsername = "";
     let inferTimer = null;
+
+    function domainOf(email) {
+      const i = (email || "").lastIndexOf("@");
+      return i >= 0 ? email.slice(i + 1).trim().toLowerCase() : "";
+    }
+
     function inferImap() {
       const username = $("username").value.trim();
       const hint = $("imap-hint");
       const hostInput = $("imap-host");
+      const authInput = $("auth");
       if (!username) {
         hint.textContent = "输入邮箱后会自动识别服务商与 IMAP 服务器。";
+        if (!hostTouched) hostInput.value = "";
         hostInput.placeholder = "自动识别，如 imap.qq.com";
         return;
       }
@@ -417,9 +427,20 @@
         .then((info) => {
           if (info.known) {
             hint.textContent = "✓ 检测到 " + info.provider + " · IMAP 服务器 " + info.host;
+            // 把识别到的主机直接填进输入框（用户手动改过则不覆盖）
+            if (!hostTouched) hostInput.value = info.host;
             hostInput.placeholder = "自动识别：" + info.host;
+            // 切换了邮箱服务商 → 旧授权码不适用，提示重新填写
+            if (document.activeElement !== authInput) {
+              const savedDomain = domainOf(savedUsername);
+              if (savedDomain && info.domain && savedDomain !== info.domain) {
+                authInput.value = "";
+                authInput.placeholder = "切换了邮箱，请重新填写该邮箱的授权码";
+              }
+            }
           } else {
             hint.textContent = "⚠ 未识别该邮箱，请在下方填写 IMAP 服务器（如 imap.example.com）。";
+            if (!hostTouched) hostInput.value = "";
             hostInput.placeholder = "需手动填写，如 imap.example.com";
           }
         })
@@ -429,18 +450,28 @@
       clearTimeout(inferTimer);
       inferTimer = setTimeout(inferImap, 250);
     });
+    $("imap-host").addEventListener("input", () => {
+      hostTouched = true;   // 用户手动改过 IMAP 服务器，之后不再自动覆盖
+    });
 
     async function refresh() {
       const date = $("date").value;
       const data = await api("/api/state?date=" + encodeURIComponent(date || ""));
       const cfg = data.config || {};
+      savedUsername = cfg.username || "";
       if (document.activeElement !== $("username") && cfg.username) $("username").value = cfg.username;
       if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
       if (!$("date").value && data.today) $("date").value = data.today;
       if (cfg.auth_code_set && !$("auth").value) $("auth").placeholder = "已保存，一般不用再填";
       const hostInput = $("imap-host");
       if (document.activeElement !== hostInput) {
-        hostInput.value = (cfg.host && cfg.host !== cfg.auto_host) ? cfg.host : "";
+        if (cfg.host && cfg.host !== cfg.auto_host) {
+          // 保存的 host 与自动推断不同 → 视为手动覆盖，填入并锁定
+          hostInput.value = cfg.host;
+          hostTouched = true;
+        } else if (!hostTouched) {
+          hostInput.value = "";
+        }
       }
       inferImap();
       renderJob(data.job);

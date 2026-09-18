@@ -73,8 +73,9 @@ class ImapSource:
             typ, _ = self.conn.login(self.cfg.username, self.cfg.auth_code)
         except imaplib.IMAP4.error as exc:
             raise ImapError(
-                "IMAP 登录失败。163/126 必须使用网页邮箱生成的「授权码」，"
-                "不能用登录密码；并请先在设置中开启 IMAP。原始错误: "
+                "IMAP 登录失败。必须使用邮箱网页设置里生成的「授权码」，"
+                "不能用登录密码；并请先在邮箱设置中开启 IMAP。"
+                "若刚切换了邮箱，请确认填的是新邮箱的授权码。原始错误: "
                 f"{exc}"
             ) from exc
         if typ != "OK":
