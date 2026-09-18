@@ -1,0 +1,637 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>邮件归档管理系统</title>
+  <style>
+    :root {
+      --bg: #f3f0ea;
+      --card: #fffdf8;
+      --ink: #1c1916;
+      --muted: #6b635a;
+      --line: #e4dcd0;
+      --accent: #1f4e79;
+      --accent-hover: #163a5c;
+      --ok: #2f6b4f;
+      --warn: #8a4b12;
+      --err: #9b2c2c;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    header h1 {
+      font-size: 28px;
+      font-weight: 650;
+      margin: 0 0 6px;
+      letter-spacing: 0.02em;
+    }
+    header p {
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px 22px 18px;
+      margin-bottom: 16px;
+    }
+    .step {
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin: 0 0 8px;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 12px 0 6px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 15px;
+      background: #fff;
+      color: var(--ink);
+    }
+    input[type="date"] {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px 0 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 15px;
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%231f4e79' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E") no-repeat 12px center;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+      opacity: 0.6;
+    }
+    input[type="date"]:hover {
+      border-color: var(--accent);
+      background-color: #faf7f0;
+    }
+    .date-wrap { position: relative; }
+    .date-wrap input {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px 0 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 15px;
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%231f4e79' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E") no-repeat 12px center;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .date-wrap input:hover { border-color: var(--accent); background-color: #faf7f0; }
+    .calendar {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      z-index: 100;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.12);
+      padding: 14px 16px 10px;
+      width: 280px;
+      transform-origin: top left;
+      animation: calPop 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+    }
+    @keyframes calPop {
+      from { opacity: 0; transform: scale(0.94) translateY(-6px); }
+      to   { opacity: 1; transform: scale(1)    translateY(0); }
+    }
+    .cal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .cal-head button {
+      height: 30px;
+      width: 30px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      font-size: 16px;
+      color: var(--accent);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .cal-head button:hover { background: #f0e8dc; }
+    .cal-title { font-size: 15px; font-weight: 650; color: var(--ink); }
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px;
+    }
+    .cal-grid .dow {
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 4px 0;
+    }
+    .cal-grid .day {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      border-radius: 7px;
+      cursor: pointer;
+      color: var(--ink);
+      transition: background 0.12s, color 0.12s;
+    }
+    .cal-grid .day:hover { background: #e8f0fa; }
+    .cal-grid .day.other { color: #c4bbb0; }
+    .cal-grid .day.today { font-weight: 700; color: var(--accent); }
+    .cal-grid .day.selected {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 650;
+    }
+    .cal-grid .day.selected:hover { background: var(--accent-hover); }
+    input:focus {
+      outline: 2px solid #1f4e7940;
+      border-color: var(--accent);
+    }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row input { flex: 1; }
+    details {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    details summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    details ol { margin: 8px 0 0; padding-left: 20px; }
+    .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    button {
+      height: 42px;
+      padding: 0 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:hover { background: #f6f1e8; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 650;
+      height: 48px;
+      padding: 0 22px;
+      font-size: 16px;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    .status {
+      margin: 0;
+      min-height: 24px;
+      font-weight: 600;
+    }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .status.run { color: var(--warn); }
+    .log {
+      margin-top: 12px;
+      background: #1c1916;
+      color: #efe8dc;
+      border-radius: 8px;
+      padding: 12px;
+      height: 160px;
+      overflow: auto;
+      font-size: 12px;
+      font-family: Consolas, "Courier New", monospace;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .empty { color: var(--muted); margin: 8px 0 0; }
+    .path { font-size: 12px; color: var(--muted); word-break: break-all; }
+    .hidden-file { display: none; }
+    .counts { color: var(--muted); font-size: 13px; margin-left: auto; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>邮件归档管理系统</h1>
+      <p>把客户发到 163 的邮件，按「日期 → 客户邮箱 → 每一封」整理到文件夹。填一次，以后每天点一下就行。</p>
+    </header>
+
+    <section class="card">
+      <p class="step">第 1 步 · 你的邮箱</p>
+      <label for="username">163 邮箱账号</label>
+      <input id="username" type="text" autocomplete="username" placeholder="例如 name@163.com" />
+      <label for="auth">授权码（不是邮箱登录密码）</label>
+      <div class="row">
+        <input id="auth" type="password" autocomplete="off" placeholder="在 163 网页邮箱里生成" />
+        <button type="button" id="toggle-auth">显示</button>
+      </div>
+      <details>
+        <summary>授权码怎么拿？点这里看 4 步</summary>
+        <ol>
+          <li>浏览器打开 mail.163.com 并登录。</li>
+          <li>进入「设置」→「POP3/SMTP/IMAP」。</li>
+          <li>开启 IMAP/SMTP，再点「生成授权码」，按提示发短信。</li>
+          <li>把生成的一串字符粘贴到上面。以后不用重复填，除非你重新生成了授权码。</li>
+        </ol>
+      </details>
+    </section>
+
+    <section class="card">
+      <p class="step">第 2 步 · 存到哪里</p>
+      <label for="archive">文件夹位置</label>
+      <div class="row">
+        <input id="archive" type="text" spellcheck="false" placeholder="例如 D:\邮件归档" />
+        <button type="button" id="pick-folder">打开文件夹</button>
+        <button type="button" id="open-root">查看</button>
+      </div>
+      <p class="hint">可以自己改路径，或点「打开文件夹」弹出窗口挑选。点「查看」会打开这个位置。</p>
+      <label for="date" id="date-label" style="cursor:pointer">整理哪一天</label>
+      <div class="date-wrap" id="date-wrap">
+        <input id="date" type="text" readonly placeholder="选择日期" />
+        <div class="calendar" id="calendar" hidden></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <p class="step">第 3 步 · 开始整理</p>
+      <div class="actions">
+        <button type="button" class="primary" id="run-imap">开始整理这一天的邮件</button>
+        <button type="button" id="run-demo">先看一次示例</button>
+        <button type="button" id="pick-files">导入电脑里的邮件</button>
+        <input id="file-input" class="hidden-file" type="file" multiple accept=".eml,.mbox,.emlx" />
+      </div>
+      <p class="hint">示例不连邮箱，会用软件自带的 4 封假邮件演示效果。真正收信请点蓝色按钮。</p>
+      <p class="status" id="status"></p>
+      <pre class="log" id="log">等待开始…</pre>
+    </section>
+
+    <section class="card">
+      <div class="actions" style="margin-top:0">
+        <p class="step" style="margin:0">已整理的邮件</p>
+        <span class="counts" id="counts"></span>
+      </div>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { polling: false };
+
+    function setStatus(text, kind) {
+      const el = $("status");
+      el.textContent = text || "";
+      el.className = "status " + (kind || "");
+    }
+
+    async function api(path, options) {
+      const res = await fetch(path, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("请求失败 " + res.status));
+      }
+      return data;
+    }
+
+    function renderJob(job) {
+      if (!job) return;
+      if (job.running) setStatus(job.message || "正在整理…", "run");
+      else if (job.phase === "error") setStatus(job.message || job.error, "err");
+      else if (job.phase === "done") setStatus(job.message, "ok");
+      const lines = (job.logs && job.logs.length) ? job.logs.join("\n") : "等待开始…";
+      $("log").textContent = lines;
+      $("log").scrollTop = $("log").scrollHeight;
+    }
+
+    function renderResults(items, viewDate) {
+      const box = $("results");
+      $("counts").textContent = items && items.length
+        ? (viewDate || "") + " · " + items.length + " 封"
+        : "";
+      if (!items || !items.length) {
+        box.innerHTML = '<p class="empty">这一天还没有整理记录。填好邮箱后点「开始整理」。</p>';
+        return;
+      }
+      const rows = items.map((item) => {
+        const who = (item.from_name ? item.from_name + " " : "") + item.from_email;
+        const path = item.path.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        return `<tr>
+          <td>${escapeHtml(item.subject)}</td>
+          <td>${escapeHtml(who)}<div class="path">${escapeHtml(item.relative)}</div></td>
+          <td>${item.attachments || 0}</td>
+          <td><button type="button" data-open="${escapeHtml(item.path)}">打开</button></td>
+        </tr>`;
+      }).join("");
+      box.innerHTML = `<table>
+        <thead><tr><th>主题</th><th>客户</th><th>附件</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+      box.querySelectorAll("button[data-open]").forEach((btn) => {
+        btn.addEventListener("click", () => openPath(btn.getAttribute("data-open")));
+      });
+    }
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formPayload() {
+      return {
+        username: $("username").value.trim(),
+        auth_code: $("auth").value,
+        archive_root: $("archive").value.trim(),
+        date: $("date").value,
+      };
+    }
+
+    async function refresh() {
+      const date = $("date").value;
+      const data = await api("/api/state?date=" + encodeURIComponent(date || ""));
+      const cfg = data.config || {};
+      if (document.activeElement !== $("username") && cfg.username) $("username").value = cfg.username;
+      if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
+      if (!$("date").value && data.today) $("date").value = data.today;
+      if (cfg.auth_code_set && !$("auth").value) $("auth").placeholder = "已保存，一般不用再填";
+      renderJob(data.job);
+      renderResults(data.results || [], data.view_date || data.today);
+      toggleBusy(!!(data.job && data.job.running));
+      if (data.job && data.job.running) startPolling();
+      return data;
+    }
+
+    function toggleBusy(busy) {
+      ["run-imap", "run-demo", "pick-files"].forEach((id) => { $(id).disabled = busy; });
+    }
+
+    async function pollLoop() {
+      if (state.polling) return;
+      state.polling = true;
+      try {
+        while (true) {
+          const job = await api("/api/job");
+          renderJob(job);
+          toggleBusy(!!job.running);
+          if (!job.running) {
+            await refresh();
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      } catch (err) {
+        setStatus(err.message, "err");
+      } finally {
+        state.polling = false;
+      }
+    }
+
+    function startPolling() {
+      pollLoop();
+    }
+
+    async function saveIfNeeded() {
+      const payload = formPayload();
+      if (!payload.archive_root) throw new Error("请填写保存文件夹");
+      await api("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    async function openPath(path) {
+      try {
+        await saveIfNeeded();
+        await api("/api/open", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: path || $("archive").value.trim() }),
+        });
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    }
+
+    $("toggle-auth").addEventListener("click", () => {
+      const input = $("auth");
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      $("toggle-auth").textContent = hidden ? "隐藏" : "显示";
+    });
+
+    $("pick-folder").addEventListener("click", async () => {
+      try {
+        const data = await api("/api/pick-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ initial: $("archive").value.trim() }),
+        });
+        if (data.cancelled || !data.path) return;
+        $("archive").value = data.path;
+        await saveIfNeeded();
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    });
+
+    $("open-root").addEventListener("click", () => openPath($("archive").value.trim()));
+
+    $("run-imap").addEventListener("click", async () => {
+      try {
+        await saveIfNeeded();
+        const payload = formPayload();
+        if (!payload.username) throw new Error("请填写 163 邮箱账号");
+        await api("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "imap", ...payload }),
+        });
+        startPolling();
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    });
+
+    $("run-demo").addEventListener("click", async () => {
+      try {
+        await saveIfNeeded();
+        await api("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "demo", ...formPayload() }),
+        });
+        startPolling();
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    });
+
+    $("pick-files").addEventListener("click", () => $("file-input").click());
+    $("file-input").addEventListener("change", async (ev) => {
+      const files = ev.target.files;
+      if (!files || !files.length) return;
+      try {
+        await saveIfNeeded();
+        const body = new FormData();
+        for (const file of files) body.append("files", file, file.name);
+        const res = await fetch("/api/import-files", { method: "POST", body });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.error || "导入失败");
+        startPolling();
+      } catch (err) {
+        setStatus(err.message, "err");
+      } finally {
+        ev.target.value = "";
+      }
+    });
+
+    $("date").addEventListener("change", () => refresh().catch((err) => setStatus(err.message, "err")));
+
+    // --- custom calendar ---
+    const calEl = $("calendar");
+    const dateInput = $("date");
+    let calYear, calMonth;
+    const DOW = ["日", "一", "二", "三", "四", "五", "六"];
+
+    function parseDate(s) {
+      if (!s) return null;
+      const [y, m, d] = s.split("-").map(Number);
+      return new Date(y, m - 1, d);
+    }
+    function fmtDate(dt) {
+      return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+    }
+
+    function renderCalendar() {
+      const today = new Date();
+      const selected = parseDate(dateInput.value);
+      const firstDay = new Date(calYear, calMonth, 1);
+      const lastDay = new Date(calYear, calMonth + 1, 0).getDate();
+      const startCol = firstDay.getDay();
+      const prevLast = new Date(calYear, calMonth, 0).getDate();
+
+      let html = `<div class="cal-head">
+        <button type="button" id="cal-prev">&#8249;</button>
+        <span class="cal-title">${calYear} 年 ${calMonth + 1} 月</span>
+        <button type="button" id="cal-next">&#8250;</button>
+      </div><div class="cal-grid">`;
+      DOW.forEach(d => html += `<span class="dow">${d}</span>`);
+      for (let i = 0; i < startCol; i++) {
+        const d = prevLast - startCol + 1 + i;
+        html += `<span class="day other">${d}</span>`;
+      }
+      for (let d = 1; d <= lastDay; d++) {
+        const dt = new Date(calYear, calMonth, d);
+        let cls = "day";
+        if (selected && dt.getTime() === selected.getTime()) cls += " selected";
+        else if (dt.toDateString() === today.toDateString()) cls += " today";
+        html += `<span class="${cls}" data-day="${d}">${d}</span>`;
+      }
+      const totalCells = startCol + lastDay;
+      const trailing = (7 - totalCells % 7) % 7;
+      for (let i = 1; i <= trailing; i++) {
+        html += `<span class="day other">${i}</span>`;
+      }
+      html += "</div>";
+      calEl.innerHTML = html;
+
+      $("cal-prev").addEventListener("click", () => {
+        calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendar();
+      });
+      $("cal-next").addEventListener("click", () => {
+        calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendar();
+      });
+      calEl.querySelectorAll(".day[data-day]").forEach(el => {
+        el.addEventListener("click", () => {
+          const d = Number(el.dataset.day);
+          dateInput.value = fmtDate(new Date(calYear, calMonth, d));
+          closeCalendar();
+          refresh().catch(err => setStatus(err.message, "err"));
+        });
+      });
+    }
+
+    function openCalendar() {
+      const sel = parseDate(dateInput.value);
+      const now = new Date();
+      calYear = sel ? sel.getFullYear() : now.getFullYear();
+      calMonth = sel ? sel.getMonth() : now.getMonth();
+      calEl.hidden = false;
+      renderCalendar();
+    }
+    function closeCalendar() {
+      calEl.hidden = true;
+    }
+
+    $("date-wrap").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (calEl.hidden) openCalendar(); else closeCalendar();
+    });
+    $("date-label").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (calEl.hidden) openCalendar(); else closeCalendar();
+    });
+    document.addEventListener("click", (e) => {
+      if (!calEl.hidden && !$("date-wrap").contains(e.target) && e.target !== $("date-label")) {
+        closeCalendar();
+      }
+    });
+
+    refresh().catch((err) => setStatus("页面加载失败：" + err.message, "err"));
+  </script>
+</body>
+</html>
