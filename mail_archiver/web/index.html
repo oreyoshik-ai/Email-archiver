@@ -678,23 +678,23 @@
     let calYear, calMonth;
     const DOW = ["日", "一", "二", "三", "四", "五", "六"];
 
-    // 点两个日期选区间；点同一天即单日；已选完整区间后再次点击则重新开始
+    // 点一个日期即单日；再点另一个日期即扩展为区间（点在起点前则交换）；
+    // 已选完整区间后再次点击则重新开始（单日）。
     function pickDay(dt) {
-      if (!rangeStart || (rangeStart && rangeEnd)) {
+      const fullRange = rangeStart && rangeEnd && dateTs(rangeStart) !== dateTs(rangeEnd);
+      if (!rangeStart || fullRange) {
         rangeStart = dt;
-        rangeEnd = null;
+        rangeEnd = dt; // 单日：起点即终点
+      } else if (dateTs(dt) < dateTs(rangeStart)) {
+        rangeEnd = rangeStart;
+        rangeStart = dt;
       } else {
-        if (dateTs(dt) < dateTs(rangeStart)) {
-          rangeEnd = rangeStart;
-          rangeStart = dt;
-        } else {
-          rangeEnd = dt;
-        }
+        rangeEnd = dt;
       }
       dateInput.value = dateInputText();
       updateRunLabel();
       renderCalendar();
-      if (rangeEnd) refresh().catch((err) => setStatus(err.message, "err"));
+      refresh().catch((err) => setStatus(err.message, "err"));
     }
 
     function renderCalendar() {
