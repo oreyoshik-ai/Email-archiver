@@ -174,6 +174,11 @@
       font-weight: 650;
     }
     .cal-grid .day.selected:hover { background: var(--accent-hover); }
+    input[readonly] {
+      background: #f3efe7;
+      color: var(--muted);
+      cursor: default;
+    }
     input:focus {
       outline: 2px solid #1f4e7940;
       border-color: var(--accent);
@@ -271,8 +276,8 @@
       <label for="username">邮箱账号</label>
       <input id="username" type="text" autocomplete="username" placeholder="例如 name@163.com 或 name@qq.com" />
       <p class="hint" id="imap-hint">输入邮箱后会自动识别服务商与 IMAP 服务器。</p>
-      <label for="imap-host">IMAP 服务器（可选，留空自动识别）</label>
-      <input id="imap-host" type="text" spellcheck="false" placeholder="自动识别，如 imap.qq.com" />
+      <label for="imap-host">IMAP 服务器（根据邮箱自动识别，不可编辑）</label>
+      <input id="imap-host" type="text" readonly spellcheck="false" placeholder="根据邮箱后缀自动识别" />
       <label for="auth">授权码（不是邮箱登录密码）</label>
       <div class="row">
         <input id="auth" type="password" autocomplete="off" placeholder="在邮箱网页设置里生成授权码" />
@@ -402,7 +407,6 @@
       };
     }
 
-    let hostTouched = false;
     let savedUsername = "";
     let inferTimer = null;
 
@@ -418,8 +422,8 @@
       const authInput = $("auth");
       if (!username) {
         hint.textContent = "输入邮箱后会自动识别服务商与 IMAP 服务器。";
-        if (!hostTouched) hostInput.value = "";
-        hostInput.placeholder = "自动识别，如 imap.qq.com";
+        hostInput.value = "";
+        hostInput.placeholder = "根据邮箱后缀自动识别";
         return;
       }
       fetch("/api/infer-imap?username=" + encodeURIComponent(username))
@@ -427,9 +431,7 @@
         .then((info) => {
           if (info.known) {
             hint.textContent = "✓ 检测到 " + info.provider + " · IMAP 服务器 " + info.host;
-            // 把识别到的主机直接填进输入框（用户手动改过则不覆盖）
-            if (!hostTouched) hostInput.value = info.host;
-            hostInput.placeholder = "自动识别：" + info.host;
+            hostInput.value = info.host;
             // 切换了邮箱服务商 → 旧授权码不适用，提示重新填写
             if (document.activeElement !== authInput) {
               const savedDomain = domainOf(savedUsername);
@@ -439,9 +441,9 @@
               }
             }
           } else {
-            hint.textContent = "⚠ 未识别该邮箱，请在下方填写 IMAP 服务器（如 imap.example.com）。";
-            if (!hostTouched) hostInput.value = "";
-            hostInput.placeholder = "需手动填写，如 imap.example.com";
+            hint.textContent = "⚠ 未识别该邮箱后缀，暂不支持自动配置 IMAP 服务器。";
+            hostInput.value = "";
+            hostInput.placeholder = "未识别，仅支持内置邮箱后缀";
           }
         })
         .catch(() => {});
@@ -449,9 +451,6 @@
     $("username").addEventListener("input", () => {
       clearTimeout(inferTimer);
       inferTimer = setTimeout(inferImap, 250);
-    });
-    $("imap-host").addEventListener("input", () => {
-      hostTouched = true;   // 用户手动改过 IMAP 服务器，之后不再自动覆盖
     });
 
     async function refresh() {
@@ -463,16 +462,6 @@
       if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
       if (!$("date").value && data.today) $("date").value = data.today;
       if (cfg.auth_code_set && !$("auth").value) $("auth").placeholder = "已保存，一般不用再填";
-      const hostInput = $("imap-host");
-      if (document.activeElement !== hostInput) {
-        if (cfg.host && cfg.host !== cfg.auto_host) {
-          // 保存的 host 与自动推断不同 → 视为手动覆盖，填入并锁定
-          hostInput.value = cfg.host;
-          hostTouched = true;
-        } else if (!hostTouched) {
-          hostInput.value = "";
-        }
-      }
       inferImap();
       renderJob(data.job);
       renderResults(data.results || [], data.view_date || data.today);
