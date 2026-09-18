@@ -445,19 +445,23 @@
       if (document.activeElement === authInput) return;
       // 邮箱没变不重复带入
       if (username === authFilledFor) return;
-      // 只在识别到完整邮箱时才查询，避免半截邮箱误清空
+      // 只在识别到完整邮箱时才处理，避免半截邮箱误清空
       if (!info || !info.known || !info.domain) return;
+      // 切换了邮箱：先把属于旧邮箱的授权码同步清掉（绝不拿 A 的码去登 B），再异步查已存码带入
+      if (authFilledFor && authFilledFor !== username && authInput.value) {
+        authInput.value = "";
+        authInput.placeholder = "正在查找该邮箱的授权码…";
+      }
+      authFilledFor = "";
       fetch("/api/saved-auth?username=" + encodeURIComponent(username))
         .then((r) => r.json())
         .then((data) => {
           if (document.activeElement === authInput) return;
-          if (data.found && data.auth_code) {
+          if (data.found && data.auth_code && !authInput.value) {
             authInput.value = data.auth_code;
             authFilledFor = username;
             authInput.placeholder = "已带入该邮箱保存的授权码";
-          } else if (authFilledFor && authFilledFor !== username) {
-            authInput.value = "";
-            authFilledFor = "";
+          } else if (!authInput.value) {
             authInput.placeholder = "该邮箱还没保存授权码，请填写";
           }
         })
