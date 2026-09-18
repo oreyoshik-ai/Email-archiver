@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from mail_archiver.config import (
     AppConfig,
     config_public_dict,
+    get_saved_auth_code,
     infer_imap_info,
     imap_credentials_ready,
     load_config,
@@ -183,6 +184,12 @@ class AppHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             username = (qs.get("username") or [""])[0]
             self._send(*_json_bytes(infer_imap_info(username)))
+            return
+        if path == "/api/saved-auth":
+            qs = parse_qs(parsed.query)
+            username = (qs.get("username") or [""])[0]
+            code = get_saved_auth_code(username)
+            self._send(*_json_bytes({"found": bool(code), "auth_code": code}))
             return
         if path == "/api/job":
             self._send(*_json_bytes(RUNNER.state.snapshot()))

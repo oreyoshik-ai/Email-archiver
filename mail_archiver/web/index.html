@@ -70,6 +70,8 @@
       font-size: 15px;
       background: #fff;
       color: var(--ink);
+      text-align: left;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
     input[type="date"] {
       width: 100%;
@@ -88,7 +90,7 @@
     }
     input[type="date"]:hover {
       border-color: var(--accent);
-      background-color: #faf7f0;
+      background-color: #eaf1f9;
     }
     .date-wrap { position: relative; }
     .date-wrap input {
@@ -102,7 +104,7 @@
       color: var(--ink);
       cursor: pointer;
     }
-    .date-wrap input:hover { border-color: var(--accent); background-color: #faf7f0; }
+    .date-wrap input:hover { border-color: var(--accent); background-color: #eaf1f9; }
     .calendar {
       position: absolute;
       top: 48px;
@@ -175,13 +177,13 @@
     }
     .cal-grid .day.selected:hover { background: var(--accent-hover); }
     input[readonly] {
-      background: #f3efe7;
       color: var(--muted);
       cursor: default;
     }
     input:focus {
-      outline: 2px solid #1f4e7940;
+      outline: none;
       border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(31, 78, 121, 0.18);
     }
     .row { display: flex; gap: 10px; align-items: center; }
     .row input { flex: 1; }
@@ -407,20 +409,14 @@
       };
     }
 
-    let savedUsername = "";
     let inferTimer = null;
-
-    function domainOf(email) {
-      const i = (email || "").lastIndexOf("@");
-      return i >= 0 ? email.slice(i + 1).trim().toLowerCase() : "";
-    }
+    let authFilledFor = ""; // #auth 当前持有的授权码属于哪个邮箱
 
     function inferImap() {
       const username = $("username").value.trim();
       const hint = $("imap-hint");
       const hostInput = $("imap-host");
-      const authInput = $("auth");
-      if (!username) {
+      if (!username || username.indexOf("@") < 0) {
         hint.textContent = "输入邮箱后会自动识别服务商与 IMAP 服务器。";
         hostInput.value = "";
         hostInput.placeholder = "根据邮箱后缀自动识别";
@@ -432,22 +428,42 @@
           if (info.known) {
             hint.textContent = "✓ 检测到 " + info.provider + " · IMAP 服务器 " + info.host;
             hostInput.value = info.host;
-            // 切换了邮箱服务商 → 旧授权码不适用，提示重新填写
-            if (document.activeElement !== authInput) {
-              const savedDomain = domainOf(savedUsername);
-              if (savedDomain && info.domain && savedDomain !== info.domain) {
-                authInput.value = "";
-                authInput.placeholder = "切换了邮箱，请重新填写该邮箱的授权码";
-              }
-            }
           } else {
             hint.textContent = "⚠ 未识别该邮箱后缀，暂不支持自动配置 IMAP 服务器。";
             hostInput.value = "";
             hostInput.placeholder = "未识别，仅支持内置邮箱后缀";
           }
+          maybeFillAuth(username, info);
         })
         .catch(() => {});
     }
+
+    // 输入邮箱后，若该邮箱以前保存过授权码则自动带入；切到没存过的邮箱则清空旧码。
+    function maybeFillAuth(username, info) {
+      const authInput = $("auth");
+      // 用户正手动填写授权码时不抢焦点
+      if (document.activeElement === authInput) return;
+      // 邮箱没变不重复带入
+      if (username === authFilledFor) return;
+      // 只在识别到完整邮箱时才查询，避免半截邮箱误清空
+      if (!info || !info.known || !info.domain) return;
+      fetch("/api/saved-auth?username=" + encodeURIComponent(username))
+        .then((r) => r.json())
+        .then((data) => {
+          if (document.activeElement === authInput) return;
+          if (data.found && data.auth_code) {
+            authInput.value = data.auth_code;
+            authFilledFor = username;
+            authInput.placeholder = "已带入该邮箱保存的授权码";
+          } else if (authFilledFor && authFilledFor !== username) {
+            authInput.value = "";
+            authFilledFor = "";
+            authInput.placeholder = "该邮箱还没保存授权码，请填写";
+          }
+        })
+        .catch(() => {});
+    }
+
     $("username").addEventListener("input", () => {
       clearTimeout(inferTimer);
       inferTimer = setTimeout(inferImap, 250);
@@ -457,11 +473,10 @@
       const date = $("date").value;
       const data = await api("/api/state?date=" + encodeURIComponent(date || ""));
       const cfg = data.config || {};
-      savedUsername = cfg.username || "";
       if (document.activeElement !== $("username") && cfg.username) $("username").value = cfg.username;
       if (document.activeElement !== $("archive") && cfg.archive_root) $("archive").value = cfg.archive_root;
       if (!$("date").value && data.today) $("date").value = data.today;
-      if (cfg.auth_code_set && !$("auth").value) $("auth").placeholder = "已保存，一般不用再填";
+      // 邮箱识别 + 按邮箱带入已存授权码（由 maybeFillAuth 处理）
       inferImap();
       renderJob(data.job);
       renderResults(data.results || [], data.view_date || data.today);

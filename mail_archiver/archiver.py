@@ -22,6 +22,7 @@ class ArchiveResult:
     saved: int = 0
     skipped: int = 0
     failed: int = 0
+    note: str = ""
 
 
 class MailArchiver:

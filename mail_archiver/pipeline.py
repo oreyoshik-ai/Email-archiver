@@ -39,10 +39,14 @@ def run_imap(cfg: AppConfig, day: date) -> ArchiveResult:
     archiver = _make_archiver(cfg)
     result = ArchiveResult()
     LOG.info("开始收取 %s 的收件箱（%s）", day.isoformat(), cfg.imap.username)
+    found = False
     with ImapSource(cfg.imap) as client:
-        for raw, internal in client.fetch_on_date(day):
+        for raw, internal in client.fetch_on_date(day, tz):
+            found = True
             received = to_tz(internal, tz) if internal else None
             consume(archiver, result, raw, received=received)
+    if not found:
+        result.note = f"{day.isoformat()} 当日收件箱没有邮件，已停止，未导出任何内容。"
     return result
 
 
@@ -68,6 +72,8 @@ def run_demo(cfg: AppConfig) -> ArchiveResult:
 
 
 def summarize(result: ArchiveResult) -> str:
+    if getattr(result, "note", ""):
+        return result.note
     if result.failed:
         return f"完成：新增 {result.saved} 封，跳过 {result.skipped} 封，失败 {result.failed} 封"
     if result.saved == 0 and result.skipped:

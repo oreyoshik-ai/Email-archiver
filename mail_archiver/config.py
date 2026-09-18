@@ -2,7 +2,7 @@
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -33,6 +33,7 @@ class AppConfig:
     timezone: str
     imap: ImapConfig
     extract: ExtractConfig
+    auth_codes: dict = field(default_factory=dict)
     config_path: Path | None = None
 
 
@@ -168,11 +169,16 @@ def load_config(explicit: str | None = None) -> AppConfig:
         max_files=int(extract_raw.get("max_files") or 500),
         max_bytes=int(extract_raw.get("max_bytes") or 524_288_000),
     )
+    auth_raw = data.get("auth_codes") or {}
+    auth_codes = {
+        str(k): str(v) for k, v in auth_raw.items()
+    } if isinstance(auth_raw, dict) else {}
     return AppConfig(
         archive_root=archive_root,
         timezone=(data.get("timezone") or "Asia/Shanghai").strip(),
         imap=imap,
         extract=extract,
+        auth_codes=auth_codes,
         config_path=used,
     )
 
@@ -205,6 +211,21 @@ def config_public_dict(cfg: AppConfig) -> dict:
     }
 
 
+def get_saved_auth_code(username: str, dest: Path | None = None) -> str:
+    """返回该邮箱已保存的授权码；没有则空串。兼容旧配置（仅 imap.auth_code）。"""
+    username = (username or "").strip()
+    if not username:
+        return ""
+    cfg = load_config(str(dest) if dest and dest.is_file() else None)
+    code = (cfg.auth_codes or {}).get(username)
+    if code:
+        return code
+    # 旧配置迁移：只有 imap.auth_code，若邮箱一致则视作已保存
+    if (cfg.imap.username or "") == username and cfg.imap.auth_code:
+        return cfg.imap.auth_code
+    return ""
+
+
 def save_config(
     *,
     username: str,
@@ -215,7 +236,12 @@ def save_config(
     host: str | None = None,
     dest: Path | None = None,
 ) -> AppConfig:
-    """保存配置。``host`` 留空或为 ``"auto"`` 时按邮箱地址自动推断 IMAP 主机。"""
+    """保存配置。
+
+    ``host`` 留空或为 ``"auto"`` 时按邮箱地址自动推断 IMAP 主机。
+    授权码按邮箱存入 ``auth_codes`` 字典：用户重新输入则更新，未输入则带入该邮箱已存码，
+    下次输入同一邮箱时前端可自动填入。切换邮箱不会把别的邮箱的授权码带过去。
+    """
     dest = dest or (project_root() / LOCAL_NAME)
     current = load_config(str(dest) if dest.is_file() else None)
     username = (username or "").strip()
@@ -225,9 +251,18 @@ def save_config(
     else:
         archive_path = archive_path.resolve()
 
+    saved_map = dict(current.auth_codes or {})
     new_auth = (auth_code or "").strip()
     if not new_auth or new_auth == "********":
-        new_auth = current.imap.auth_code if current.config_path else ""
+        # 用户未重新输入：优先取该邮箱已存授权码；其次仅当邮箱未变时沿用当前 imap.auth_code
+        if username and username in saved_map:
+            new_auth = saved_map[username]
+        elif current.config_path and (current.imap.username or "") == username and username:
+            new_auth = current.imap.auth_code
+        else:
+            new_auth = ""
+    if username and new_auth:
+        saved_map[username] = new_auth
 
     resolved_host = (host or "").strip()
     if not resolved_host or resolved_host.lower() == "auto":
@@ -250,6 +285,7 @@ def save_config(
             "max_files": current.extract.max_files,
             "max_bytes": current.extract.max_bytes,
         },
+        "auth_codes": saved_map,
     }
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".json.tmp")

@@ -195,12 +195,92 @@ def _check_save_config(tmp_path: Path) -> None:
     LOG.info("配置保存与 host 推断检查通过")
 
 
+def _check_auth_memory(tmp_path: Path) -> None:
+    """校验按邮箱记忆授权码：保存→带入→更新→切换不串码。"""
+    from mail_archiver.config import get_saved_auth_code, save_config
+
+    dest = tmp_path / "config.local.json"
+    arc = str(tmp_path / "arc")
+    save_config(username="a@163.com", auth_code="CODE_A", archive_root=arc, dest=dest)
+    assert get_saved_auth_code("a@163.com", dest) == "CODE_A", "A 邮箱授权码应已记忆"
+    save_config(username="b@qq.com", auth_code="CODE_B", archive_root=arc, dest=dest)
+    assert get_saved_auth_code("b@qq.com", dest) == "CODE_B"
+    assert get_saved_auth_code("a@163.com", dest) == "CODE_A", "切到 B 后 A 的授权码仍应被记忆"
+    # 重新输入 A 的授权码 → 更新
+    save_config(username="a@163.com", auth_code="CODE_A2", archive_root=arc, dest=dest)
+    assert get_saved_auth_code("a@163.com", dest) == "CODE_A2", "重新输入应更新授权码"
+    # 切回 A 但不传码 → 应自动带入 A 的已存码（不能串成 B 的）
+    cfg = save_config(username="a@163.com", auth_code=None, archive_root=arc, dest=dest)
+    assert cfg.imap.auth_code == "CODE_A2", "不重填时应带入该邮箱已存授权码"
+    # 切到一个没存过的邮箱且不传码 → 不能把别的邮箱的码带过去
+    cfg2 = save_config(username="c@qq.com", auth_code=None, archive_root=arc, dest=dest)
+    assert cfg2.imap.auth_code == "", "没存过的邮箱不传码时不应带入他人授权码"
+    LOG.info("按邮箱记忆授权码检查通过")
+
+
+def _check_summarize_note() -> None:
+    """校验空结果提示：设了 note 优先返回 note。"""
+    from mail_archiver.archiver import ArchiveResult
+    from mail_archiver.pipeline import summarize
+
+    r = ArchiveResult()
+    r.note = "2026-09-18 当日收件箱没有邮件，已停止，未导出任何内容。"
+    assert summarize(r) == r.note, "设置 note 时应优先返回 note"
+    assert summarize(ArchiveResult()) == "没有找到可整理的邮件"
+    LOG.info("空结果提示检查通过")
+
+
+def _check_empty_day_filter() -> None:
+    """回归：当日无邮件时不能导出全部，必须按 INTERNALDATE 校验后停止。"""
+    from datetime import date, timezone, timedelta
+    from mail_archiver.config import ImapConfig
+    from mail_archiver.imap_client import ImapSource
+
+    class FakeConn:
+        def __init__(self, search_uids, internaldate_resp):
+            self._search = search_uids
+            self._internaldate = internaldate_resp
+
+        def select(self, folder, readonly=True):
+            return ("OK", [b"1"])
+
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                # 模拟 163 空日期故障性地返回整箱 UID
+                return ("OK", [self._search])
+            if command == "FETCH":
+                return ("OK", self._internaldate)
+            return ("NO", None)
+
+        def logout(self):
+            pass
+
+    day = date(2026, 9, 18)
+    tz = timezone(timedelta(hours=8))
+    # SEARCH 返回 3 个 UID，但它们的 INTERNALDATE 都不在 9-18
+    internaldate_resp = [
+        b"1 (UID 1 INTERNALDATE \"17-Sep-2026 10:00:00 +0800\")",
+        b"2 (UID 2 INTERNALDATE \"19-Sep-2026 10:00:00 +0800\")",
+        b"3 (UID 3 INTERNALDATE \"20-Sep-2026 10:00:00 +0800\")",
+        b")",
+    ]
+    conn = FakeConn(b"1 2 3", internaldate_resp)
+    src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
+    src.conn = conn
+    yielded = list(src.fetch_on_date(day, tz))
+    assert yielded == [], f"当日无邮件时不应导出任何内容，却导出了 {len(yielded)} 封"
+    LOG.info("空日期防误导检查通过")
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
+    _check_summarize_note()
+    _check_empty_day_filter()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
+        _check_auth_memory(tmp_path)
         sample = build_sample_dir(tmp_path)
         archive_root = tmp_path / "archive"
         cfg = AppConfig(

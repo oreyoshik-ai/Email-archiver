@@ -8,11 +8,12 @@ from email.utils import parsedate_to_datetime
 from typing import Iterator
 
 from mail_archiver.config import ImapConfig
-from mail_archiver.util import imap_date
+from mail_archiver.util import imap_date, to_tz
 
 LOG = logging.getLogger("mail_archiver")
 
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE "([^"]+)"')
+_UID_RE = re.compile(rb"UID (\d+)")
 
 
 class ImapError(RuntimeError):
@@ -101,15 +102,17 @@ class ImapSource:
     def __exit__(self, *args) -> None:
         self.close()
 
-    def fetch_on_date(self, day: date) -> Iterator[tuple[bytes, datetime | None]]:
+    def fetch_on_date(self, day: date, tz=None) -> Iterator[tuple[bytes, datetime | None]]:
         if self.conn is None:
             raise ImapError("IMAP 未连接")
         typ, _ = self.conn.select(self.cfg.folder, readonly=True)
         if typ != "OK":
             raise ImapError(f"无法打开文件夹 {self.cfg.folder}")
 
-        uids = self._search_uids(day)
-        LOG.info("日期 %s 在 %s 中匹配到 %s 封邮件", day.isoformat(), self.cfg.folder, len(uids))
+        candidates = self._search_uids(day)
+        LOG.info("日期 %s 在 %s 中初筛到 %s 封", day.isoformat(), self.cfg.folder, len(candidates))
+        uids = self._filter_by_internal_date(candidates, day, tz)
+        LOG.info("按 INTERNALDATE 校验后 %s 当日实有 %s 封", day.isoformat(), len(uids))
         for uid in uids:
             raw, internal = self._fetch_uid(uid)
             if raw:
@@ -118,25 +121,68 @@ class ImapSource:
     def _search_uids(self, day: date) -> list[str]:
         assert self.conn is not None
         day_s = imap_date(day)
-        queries = [
-            f"(ON {day_s})",
-            f"(SINCE {day_s} BEFORE {imap_date(day + timedelta(days=1))})",
-        ]
-        for query in queries:
+        # 只用严格的 SINCE/BEFORE 区间。ON 在部分邮箱（如 163）上不可靠，
+        # 当日无邮件时会把整箱邮件都返回，导致误导出全部。
+        query = f"(SINCE {day_s} BEFORE {imap_date(day + timedelta(days=1))})"
+        try:
+            typ, data = self.conn.uid("SEARCH", None, query)
+        except Exception as exc:
+            LOG.debug("SEARCH %s 失败: %s", query, exc)
+            return []
+        if typ != "OK":
+            return []
+        token = data[0] if data else b""
+        if not token:
+            return []
+        return token.decode("ascii", errors="ignore").split()
+
+    def _filter_by_internal_date(self, uids: list[str], day: date, tz=None) -> list[str]:
+        """服务端 SEARCH 不可靠（个别邮箱空日期会返回整箱），用 INTERNALDATE 二次校验，只留当日的。"""
+        if not uids:
+            return []
+        dated = self._fetch_internaldates(uids)
+        kept: list[str] = []
+        for uid in uids:
+            internal = dated.get(uid)
+            if internal is None:
+                continue
+            received_day = to_tz(internal, tz).date() if tz is not None else internal.date()
+            if received_day == day:
+                kept.append(uid)
+            else:
+                LOG.debug("UID %s INTERNALDATE 为 %s，非 %s，跳过", uid, received_day, day)
+        return kept
+
+    def _fetch_internaldates(self, uids: list[str]) -> dict[str, datetime]:
+        """批量取 INTERNALDATE，返回 {uid: internal_dt}。"""
+        assert self.conn is not None
+        result: dict[str, datetime] = {}
+        if not uids:
+            return result
+        for i in range(0, len(uids), 500):
+            batch = uids[i:i + 500]
+            seqset = ",".join(batch)
             try:
-                typ, data = self.conn.uid("SEARCH", None, query)
+                typ, data = self.conn.uid("FETCH", seqset, "(INTERNALDATE)")
             except Exception as exc:
-                LOG.debug("SEARCH %s 失败: %s", query, exc)
+                LOG.warning("批量取 INTERNALDATE 失败(%s): %s", seqset, exc)
                 continue
-            if typ != "OK":
+            if typ != "OK" or not data:
                 continue
-            token = data[0] if data else b""
-            if not token:
-                continue
-            uids = token.decode("ascii", errors="ignore").split()
-            if uids:
-                return uids
-        return []
+            for item in data:
+                if isinstance(item, tuple):
+                    header = item[0] if item else b""
+                elif isinstance(item, (bytes, bytearray)):
+                    header = bytes(item)
+                else:
+                    continue
+                if not isinstance(header, (bytes, bytearray)):
+                    continue
+                uid_m = _UID_RE.search(header)
+                dt = _parse_internaldate(header)
+                if uid_m and dt is not None:
+                    result[uid_m.group(1).decode("ascii", errors="ignore")] = dt
+        return result
 
     def _fetch_uid(self, uid: str) -> tuple[bytes | None, datetime | None]:
         assert self.conn is not None
