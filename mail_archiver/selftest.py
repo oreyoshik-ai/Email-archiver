@@ -240,19 +240,17 @@ def _check_empty_day_filter() -> None:
     from mail_archiver.imap_client import ImapSource
 
     class FakeConn:
-        def __init__(self, search_uids, internaldate_resp):
-            self._search = search_uids
-            self._internaldate = internaldate_resp
+        def __init__(self, exists, enumeration_resp):
+            self._exists = exists
+            self._enumeration = enumeration_resp
 
         def select(self, folder, readonly=True):
-            return ("OK", [b"1"])
+            return ("OK", [self._exists])
+
+        def fetch(self, message_set, message_parts):
+            return ("OK", self._enumeration)
 
         def uid(self, command, *args):
-            if command == "SEARCH":
-                # 模拟 163 空日期故障性地返回整箱 UID
-                return ("OK", [self._search])
-            if command == "FETCH":
-                return ("OK", self._internaldate)
             return ("NO", None)
 
         def logout(self):
@@ -260,14 +258,14 @@ def _check_empty_day_filter() -> None:
 
     day = date(2026, 9, 18)
     tz = timezone(timedelta(hours=8))
-    # SEARCH 返回 3 个 UID，但它们的 INTERNALDATE 都不在 9-18
-    internaldate_resp = [
+    # 全箱 3 封，INTERNALDATE 都不在 9-18
+    enumeration_resp = [
         b"1 (UID 1 INTERNALDATE \"17-Sep-2026 10:00:00 +0800\")",
         b"2 (UID 2 INTERNALDATE \"19-Sep-2026 10:00:00 +0800\")",
         b"3 (UID 3 INTERNALDATE \"20-Sep-2026 10:00:00 +0800\")",
         b")",
     ]
-    conn = FakeConn(b"1 2 3", internaldate_resp)
+    conn = FakeConn(b"3", enumeration_resp)
     src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
     src.conn = conn
     yielded = list(src.fetch_on_date(day, tz))
@@ -282,15 +280,17 @@ def _check_range_filter() -> None:
     from mail_archiver.imap_client import ImapSource
 
     class FakeConn:
-        def __init__(self, internaldate_resp):
-            self._internaldate = internaldate_resp
+        def __init__(self, exists, enumeration_resp):
+            self._exists = exists
+            self._enumeration = enumeration_resp
 
         def select(self, folder, readonly=True):
-            return ("OK", [b"1"])
+            return ("OK", [self._exists])
+
+        def fetch(self, message_set, message_parts):
+            return ("OK", self._enumeration)
 
         def uid(self, command, *args):
-            if command == "FETCH":
-                return ("OK", self._internaldate)
             return ("NO", None)
 
         def logout(self):
@@ -298,7 +298,7 @@ def _check_range_filter() -> None:
 
     tz = timezone(timedelta(hours=8))
     # 5 封：边界前 / 起点 / 中间 / 终点 / 边界后
-    internaldate_resp = [
+    enumeration_resp = [
         b"1 (UID 1 INTERNALDATE \"14-Sep-2026 10:00:00 +0800\")",
         b"2 (UID 2 INTERNALDATE \"15-Sep-2026 10:00:00 +0800\")",
         b"3 (UID 3 INTERNALDATE \"16-Sep-2026 23:59:00 +0800\")",
@@ -306,17 +306,147 @@ def _check_range_filter() -> None:
         b"5 (UID 5 INTERNALDATE \"18-Sep-2026 10:00:00 +0800\")",
         b")",
     ]
-    conn = FakeConn(internaldate_resp)
+    conn = FakeConn(b"5", enumeration_resp)
     src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
     src.conn = conn
-    kept = src._filter_in_range(["1", "2", "3", "4", "5"], date(2026, 9, 15), date(2026, 9, 17), tz)
+    kept = [u for u, _ in src._mails_in_range(date(2026, 9, 15), date(2026, 9, 17), tz, 5)]
     assert kept == ["2", "3", "4"], f"区间 9-15~9-17 应只留 2/3/4，实际 {kept}"
     # 单日等价：start==end 只留当天
-    kept_day = src._filter_in_range(["1", "2", "3", "4", "5"], date(2026, 9, 16), date(2026, 9, 16), tz)
+    kept_day = [u for u, _ in src._mails_in_range(date(2026, 9, 16), date(2026, 9, 16), tz, 5)]
     assert kept_day == ["3"], f"单日 9-16 应只留 3，实际 {kept_day}"
-    # 空区间：无候选
-    assert src._filter_in_range([], date(2026, 9, 1), date(2026, 9, 10), tz) == []
+    # 整箱都不在区间内：一封不留
+    kept_none = src._mails_in_range(date(2026, 9, 1), date(2026, 9, 10), tz, 5)
+    assert kept_none == [], f"区间 9-1~9-10 应为空，实际 {kept_none}"
     LOG.info("区间筛选检查通过")
+
+
+def _check_header_date_filing() -> None:
+    """回归：归档日期优先 Date 信头（客户端列表显示的发信时间），入箱时间只作兜底。
+
+    真实场景：搬家/迁移进来的邮件，信头是 6 月、INTERNALDATE 是 8 月下旬，
+    网页/客户端列表显示 6 月——按入箱时间归目录会把它们全放进 8 月文件夹，
+    用户选 6 月导出时也筛不到。
+    """
+    from datetime import date, timezone, timedelta
+    from mail_archiver.config import ImapConfig
+    from mail_archiver.imap_client import ImapSource
+
+    mails = [
+        (20, "22-Aug-2026 09:00:00 +0800", "Sat, 13 Jun 2026 10:20:00 +0800"),
+        (21, "23-Aug-2026 09:00:00 +0800", "Fri, 12 Jun 2026 08:00:00 +0800"),
+        (22, "24-Aug-2026 09:00:00 +0800", None),  # 无 Date 信头 → 回退入箱时间
+        (23, "10-Sep-2026 09:00:00 +0800", "Thu, 10 Sep 2026 09:00:00 +0800"),
+    ]
+
+    class FakeConn:
+        def select(self, folder, readonly=True):
+            return ("OK", [str(len(mails)).encode()])
+
+        def fetch(self, message_set, message_parts):
+            # 模拟带字面量的真实响应：序号 (UID n INTERNALDATE "..." BODY[HEADER.FIELDS (DATE)] {长度} + Date 文本
+            resp = []
+            for part in message_set.split(","):
+                a, _, b = part.partition(":")
+                lo, hi = int(a), int(b or a)
+                for seq in range(lo, hi + 1):
+                    uid, idate, hdate = mails[seq - 1]
+                    prefix = f'{seq} (UID {uid} INTERNALDATE "{idate}" BODY[HEADER.FIELDS (DATE)] '
+                    literal = f"Date: {hdate}\r\n\r\n".encode() if hdate else b"\r\n"
+                    resp.append((prefix.encode() + str(len(literal)).encode() + b"}", literal))
+            return ("OK", resp)
+
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                return ("OK", [b""])  # 故意不配合：正确实现不依赖 SEARCH
+            if command == "FETCH":
+                uid = str(args[0])
+                for u, idate, _ in mails:
+                    if str(u) == uid:
+                        header = f'{u} (UID {u} INTERNALDATE "{idate}")'.encode()
+                        return ("OK", [(header, b"RAW:" + str(u).encode())])
+                return ("OK", [])
+            return ("NO", None)
+
+        def logout(self):
+            pass
+
+    tz = timezone(timedelta(hours=8))
+    src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
+    src.conn = FakeConn()
+    # 选 6 月：信头 6 月的两封必须被筛出，且交付的归档日期是 6 月（不是 8 月的入箱时间）
+    yielded = list(src.fetch_in_range(date(2026, 6, 1), date(2026, 6, 30), tz))
+    raws = sorted(r for r, _ in yielded)
+    assert raws == [b"RAW:20", b"RAW:21"], f"信头 6 月的邮件应被导出，实际 {raws}"
+    for _, eff in yielded:
+        assert eff.date().month == 6, f"交付的归档日期应为 6 月，实际 {eff}"
+    # 宽区间：无 Date 信头的邮件按入箱时间兜底，也能导出
+    yielded_all = list(src.fetch_in_range(date(2026, 6, 1), date(2026, 9, 30), tz))
+    assert sorted(r for r, _ in yielded_all) == [b"RAW:20", b"RAW:21", b"RAW:22", b"RAW:23"], (
+        f"宽区间应导出全部 4 封（含无信头回退的 22），实际 {[r for r, _ in yielded_all]}"
+    )
+    LOG.info("信头日期归档检查通过")
+
+
+def _check_search_truncation() -> None:
+    """回归：候选必须按序号全量枚举，不能依赖服务端日期 SEARCH 的正确性。
+
+    各服务商 SEARCH 实现参差：有对大跨度区间静默截断的、有空范围返回整箱的。
+    下面的假服务器故意把日期 SEARCH 伪装成只返回后半段 UID，而全箱实际有
+    6~9 月的邮件——正确实现必须按序号枚举，一封不少地导出区间内的邮件。
+    """
+    from datetime import date, timezone, timedelta
+    from mail_archiver.config import ImapConfig
+    from mail_archiver.imap_client import ImapSource
+
+    mails = [
+        (10, "15-Jun-2026 09:00:00 +0800"),
+        (11, "03-Jul-2026 09:00:00 +0800"),
+        (12, "21-Jul-2026 09:00:00 +0800"),
+        (13, "05-Aug-2026 09:00:00 +0800"),
+        (14, "10-Sep-2026 09:00:00 +0800"),
+    ]
+
+    class FakeConn:
+        def select(self, folder, readonly=True):
+            return ("OK", [str(len(mails)).encode()])
+
+        def fetch(self, message_set, message_parts):
+            # 序号批次枚举：解析 seqset 返回对应记录
+            resp = []
+            for part in message_set.split(","):
+                a, _, b = part.partition(":")
+                lo, hi = int(a), int(b or a)
+                for seq in range(lo, hi + 1):
+                    uid, idate = mails[seq - 1]
+                    resp.append(f'{seq} (UID {uid} INTERNALDATE "{idate}")'.encode())
+            return ("OK", resp)
+
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                # 故意模拟服务器截断：区间里 6/7 月的 UID 全部不返回
+                return ("OK", [b"13 14"])
+            if command == "FETCH":
+                # _fetch_uid 拉整封：args = (uid, "(INTERNALDATE BODY.PEEK[])")
+                uid = str(args[0])
+                for u, idate in mails:
+                    if str(u) == uid:
+                        header = f'{u} (UID {u} INTERNALDATE "{idate}")'.encode()
+                        return ("OK", [(header, b"RAW:" + str(u).encode())])
+                return ("OK", [])
+            return ("NO", None)
+
+        def logout(self):
+            pass
+
+    tz = timezone(timedelta(hours=8))
+    src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
+    src.conn = FakeConn()
+    yielded = list(src.fetch_in_range(date(2026, 6, 1), date(2026, 9, 21), tz))
+    raws = sorted(r for r, _ in yielded)
+    assert raws == [b"RAW:10", b"RAW:11", b"RAW:12", b"RAW:13", b"RAW:14"], (
+        f"6~9 月区间应导出全部 5 封（含被 SEARCH 截断掉的 6/7 月），实际 {raws}"
+    )
+    LOG.info("服务端 SEARCH 截断防护检查通过")
 
 
 def _check_internaldate_tz() -> None:
@@ -355,9 +485,13 @@ def _check_internaldate_tz() -> None:
         def __init__(self, resp):
             self._resp = resp
 
+        def select(self, folder, readonly=True):
+            return ("OK", [b"3"])
+
+        def fetch(self, message_set, message_parts):
+            return ("OK", self._resp)
+
         def uid(self, command, *args):
-            if command == "FETCH":
-                return ("OK", self._resp)
             return ("NO", None)
 
         def logout(self):
@@ -371,7 +505,7 @@ def _check_internaldate_tz() -> None:
     ]
     src = ImapSource(ImapConfig(username="x@163.com", auth_code="c"))
     src.conn = FakeConn(resp)
-    kept = src._filter_in_range(["1", "2", "3"], date(2026, 9, 15), date(2026, 9, 17), tz)
+    kept = [u for u, _ in src._mails_in_range(date(2026, 9, 15), date(2026, 9, 17), tz, 3)]
     assert kept == ["1", "2"], f"应保留 1/2，实际 {kept}"
     LOG.info("INTERNALDATE 时区检查通过")
 
@@ -460,6 +594,8 @@ def run_self_test(verbose: bool = False) -> int:
     _check_summarize_note()
     _check_empty_day_filter()
     _check_range_filter()
+    _check_search_truncation()
+    _check_header_date_filing()
     _check_internaldate_tz()
     _check_calendar_click()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
