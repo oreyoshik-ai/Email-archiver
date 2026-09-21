@@ -151,6 +151,13 @@ def _measure_height(browser: str, html_path: Path, width: int) -> int:
         proc = subprocess.run(cmd, capture_output=True, timeout=20)
         stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
         match = re.search(r"HEIGHT:(\d+)", stdout)
+        if not match:
+            # Win7 上最后的浏览器（Chrome 109/Edge 110）不认识 --headless=new（112 才加入），
+            # 会正常启动且不出 DOM，换旧 --headless 再量一次。
+            cmd[1] = "--headless"
+            proc = subprocess.run(cmd, capture_output=True, timeout=20)
+            stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+            match = re.search(r"HEIGHT:(\d+)", stdout)
         if match:
             return int(match.group(1)) + 64
     except Exception:
@@ -189,7 +196,9 @@ def render_screenshot(mail: ParsedMail, output_png: Path, width: int = 820) -> b
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=30)
-        if proc.returncode != 0 and not output_png.is_file():
+        # 只要没出图就换旧 --headless 重试：Win7 最后版浏览器（Chrome 109/Edge 110）
+        # 不认识 --headless=new，会正常启动、退出码为 0 但不截图，不能只看 returncode。
+        if not output_png.is_file():
             cmd[1] = "--headless"
             cmd[-2] = f"--window-size={width},{height}"
             proc = subprocess.run(cmd, capture_output=True, timeout=30)

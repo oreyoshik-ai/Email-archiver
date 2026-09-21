@@ -5,7 +5,11 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:  # Python 3.8（Win7 等旧系统）没有 zoneinfo，走 UTC+8 兜底
+    ZoneInfo = None
+    ZoneInfoNotFoundError = Exception
 
 LOG = logging.getLogger("mail_archiver")
 
@@ -61,6 +65,8 @@ def resolve_timezone(name: str):
     if name in _TZ_CACHE:
         return _TZ_CACHE[name]
     try:
+        if ZoneInfo is None:
+            raise ZoneInfoNotFoundError(name)
         tz = ZoneInfo(name)
     except ZoneInfoNotFoundError:
         LOG.warning("本机缺少时区数据 %s，回退到 UTC+8（中国无夏令时，与上海时区等价）", name)

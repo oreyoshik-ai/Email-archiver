@@ -24,7 +24,7 @@
 
 ## 环境要求
 
-- **Python 3.10 或更高版本**（下载地址：<https://www.python.org/downloads/>，安装时勾选 "Add Python to PATH"）
+- **Python 3.8 或更高版本**（下载地址：<https://www.python.org/downloads/>，安装时勾选 "Add Python to PATH"）。Win7 旧系统只能装到 3.8.10（<https://www.python.org/ftp/python/3.8.10/python-3.8.10-amd64.exe>），本工具兼容
 - 本机装有 **Edge** 或 **Chrome** 浏览器（用于生成邮件预览截图；没有也能用，只是不生成截图）
 - Windows / macOS / Linux 均可
 

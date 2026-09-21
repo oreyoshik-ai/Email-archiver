@@ -11,3 +11,6 @@ config.local.json
 *.log
 .DS_Store
 Thumbs.db
+
+# 离线部署用的 Python 安装包，不进版本库（曾因 git add 误加产生 28MB 孤儿对象）
+所需环境Python安装包/

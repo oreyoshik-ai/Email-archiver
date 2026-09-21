@@ -3,6 +3,8 @@
 import imaplib
 import logging
 import re
+import socket
+import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterator
 
@@ -86,11 +88,18 @@ class ImapSource:
     def connect(self) -> None:
         _ensure_id_command()
         LOG.info("连接 IMAP %s:%s ...", self.cfg.host, self.cfg.port)
+        if sys.version_info < (3, 9):
+            # Python 3.8 的 imaplib 没有 timeout 参数（3.9 才加入，Win7 只能装 3.8），
+            # 退而求其次用全局 socket 默认超时兜底。
+            socket.setdefaulttimeout(30)
+            kwargs: dict = {}
+        else:
+            kwargs = {"timeout": 30}
         try:
             if self.cfg.ssl:
-                self.conn = imaplib.IMAP4_SSL(self.cfg.host, self.cfg.port, timeout=30)
+                self.conn = imaplib.IMAP4_SSL(self.cfg.host, self.cfg.port, **kwargs)
             else:
-                self.conn = imaplib.IMAP4(self.cfg.host, self.cfg.port, timeout=30)
+                self.conn = imaplib.IMAP4(self.cfg.host, self.cfg.port, **kwargs)
         except Exception as exc:
             raise ImapError(f"无法连接 {self.cfg.host}:{self.cfg.port}: {exc}") from exc
 
