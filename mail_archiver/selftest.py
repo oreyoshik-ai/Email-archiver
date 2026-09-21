@@ -510,6 +510,46 @@ def _check_internaldate_tz() -> None:
     LOG.info("INTERNALDATE 时区检查通过")
 
 
+def _run_page_script(script: str, marker: str) -> str | None:
+    """把注入脚本塞进页面副本，用本机无头浏览器加载后从 document.title 取回结果。
+
+    返回 None 表示本机没有可用浏览器（调用方应跳过检查）；空串表示页面没渲染出结果。
+    """
+    from mail_archiver.screenshot import _find_browser
+
+    browser = _find_browser()
+    if not browser:
+        return None
+    page_src = Path(__file__).resolve().parent / "web" / "index.html"
+    tmp = tempfile.mkdtemp(prefix="page-check-")
+    try:
+        page = Path(tmp) / "index.html"
+        page.write_text(
+            page_src.read_text(encoding="utf-8").replace("</body>", script + "</body>"),
+            encoding="utf-8",
+        )
+        cmd = [
+            browser,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--virtual-time-budget=5000",
+            "--dump-dom",
+            page.as_uri(),
+        ]
+        dom = ""
+        for headless in ("--headless=new", "--headless"):
+            cmd[1] = headless
+            proc = subprocess.run(cmd, capture_output=True, timeout=30)
+            dom = (proc.stdout or b"").decode("utf-8", errors="replace")
+            if marker in dom:
+                break
+        match = re.search(re.escape(marker) + r"(.*?)</title>", dom, re.S)
+        return match.group(1) if match else ""
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 CAL_TEST_SCRIPT = """
 <script>
 window.addEventListener('load', function () {
@@ -538,54 +578,23 @@ window.addEventListener('load', function () {
 def _check_calendar_click() -> None:
     """回归：日历面板内点击（翻月/选日）不得被外层开/关处理器误关闭。
 
-    用无头浏览器加载页面副本、注入模拟点击脚本，结果写进 document.title 再解析。
     面板内点击若冒泡到外层会立刻 closeCalendar，本检查直接复现用户操作路径。
     """
-    from mail_archiver.screenshot import _find_browser
-
-    browser = _find_browser()
-    if not browser:
+    result = _run_page_script(CAL_TEST_SCRIPT, "TEST:")
+    if result is None:
         LOG.warning("找不到 Edge/Chrome，跳过日历点击检查")
         return
-    page_src = Path(__file__).resolve().parent / "web" / "index.html"
-    tmp = tempfile.mkdtemp(prefix="cal-check-")
-    try:
-        page = Path(tmp) / "index.html"
-        page.write_text(
-            page_src.read_text(encoding="utf-8").replace("</body>", CAL_TEST_SCRIPT + "</body>"),
-            encoding="utf-8",
-        )
-        cmd = [
-            browser,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--virtual-time-budget=5000",
-            "--dump-dom",
-            page.as_uri(),
-        ]
-        dom = ""
-        for headless in ("--headless=new", "--headless"):
-            cmd[1] = headless
-            proc = subprocess.run(cmd, capture_output=True, timeout=30)
-            dom = (proc.stdout or b"").decode("utf-8", errors="replace")
-            if "TEST:" in dom:
-                break
-        match = re.search(r"TEST:(.*?)</title>", dom, re.S)
-        assert match, "日历点击测试没有返回结果（浏览器未渲染页面）"
-        result = match.group(1)
-        assert "ERR" not in result, f"日历点击测试脚本报错: {result}"
-        assert "prev: hidden=false" in result and "next: hidden=false" in result, (
-            f"翻月后面板被关闭: {result}"
-        )
-        assert "2026 年 8 月" in result, f"点击 ‹ 后月份没有切换: {result}"
-        # day15 点在"回到 9 月"之后：若 next 没把月份翻回来，这里会是 2026-08-15
-        assert "day15: hidden=false date=2026-09-15" in result and (
-            "day18: hidden=false date=2026-09-15 ~ 2026-09-18" in result
-        ), f"选日期后面板被关闭或区间值不对（区间两连点被中断）: {result}"
-        LOG.info("日历点击检查通过")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    assert result, "日历点击测试没有返回结果（浏览器未渲染页面）"
+    assert "ERR" not in result, f"日历点击测试脚本报错: {result}"
+    assert "prev: hidden=false" in result and "next: hidden=false" in result, (
+        f"翻月后面板被关闭: {result}"
+    )
+    assert "2026 年 8 月" in result, f"点击 ‹ 后月份没有切换: {result}"
+    # day15 点在"回到 9 月"之后：若 next 没把月份翻回来，这里会是 2026-08-15
+    assert "day15: hidden=false date=2026-09-15" in result and (
+        "day18: hidden=false date=2026-09-15 ~ 2026-09-18" in result
+    ), f"选日期后面板被关闭或区间值不对（区间两连点被中断）: {result}"
+    LOG.info("日历点击检查通过")
 
 
 CHUNK_TEST_SCRIPT = """
@@ -612,47 +621,61 @@ def _check_import_chunking() -> None:
     从邮箱大师导出的几百封 .eml 若一次性 POST，整个 multipart 会被后端读进内存；
     且后端任务器同时只跑一个任务。前端 chunkArray 负责切批、每批等任务跑完再传。
     """
-    from mail_archiver.screenshot import _find_browser
-
-    browser = _find_browser()
-    if not browser:
+    result = _run_page_script(CHUNK_TEST_SCRIPT, "CHUNK:")
+    if result is None:
         LOG.warning("找不到 Edge/Chrome，跳过批量导入分批检查")
         return
-    page_src = Path(__file__).resolve().parent / "web" / "index.html"
-    tmp = tempfile.mkdtemp(prefix="chunk-check-")
-    try:
-        page = Path(tmp) / "index.html"
-        page.write_text(
-            page_src.read_text(encoding="utf-8").replace("</body>", CHUNK_TEST_SCRIPT + "</body>"),
-            encoding="utf-8",
-        )
-        cmd = [
-            browser,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--virtual-time-budget=5000",
-            "--dump-dom",
-            page.as_uri(),
-        ]
-        dom = ""
-        for headless in ("--headless=new", "--headless"):
-            cmd[1] = headless
-            proc = subprocess.run(cmd, capture_output=True, timeout=30)
-            dom = (proc.stdout or b"").decode("utf-8", errors="replace")
-            if "CHUNK:" in dom:
-                break
-        match = re.search(r"CHUNK:(.*?)</title>", dom, re.S)
-        assert match, "批量导入检查没有返回结果（浏览器未渲染页面）"
-        result = match.group(1)
-        assert "ERR" not in result, f"批量导入检查脚本报错: {result}"
-        assert "multiple=true" in result, f"文件选择框应允许多选: {result}"
-        assert "sizes=20,20,5" in result and "exact=2,2" in result and "empty=0" in result, (
-            f"分批边界不对: {result}"
-        )
-        LOG.info("批量导入分批检查通过")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    assert result, "批量导入检查没有返回结果（浏览器未渲染页面）"
+    assert "ERR" not in result, f"批量导入检查脚本报错: {result}"
+    assert "multiple=true" in result, f"文件选择框应允许多选: {result}"
+    assert "sizes=20,20,5" in result and "exact=2,2" in result and "empty=0" in result, (
+        f"分批边界不对: {result}"
+    )
+    LOG.info("批量导入分批检查通过")
+
+
+PICK_TEST_SCRIPT = """
+<script>
+window.addEventListener('load', function () {
+  var out = [];
+  try {
+    var called = 0;
+    var gotCount = -1;
+    window.saveIfNeeded = function () { return Promise.resolve(); };
+    window.importMailFiles = function (list) { called++; gotCount = list.length; };
+    var input = document.getElementById('file-input');
+    var dt = new DataTransfer();
+    dt.items.add(new File(['a'], 'a.eml'));
+    dt.items.add(new File(['b'], 'b.eml'));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change'));
+  } catch (e) { out.push('ERR ' + e.message); }
+  setTimeout(function () {
+    out.push('called=' + called + ' count=' + gotCount);
+    document.title = 'PICK:' + out.join(' | ');
+  }, 300);
+});
+</script>
+"""
+
+
+def _check_file_pick_import() -> None:
+    """回归：选完文件点「打开」必须真正进入导入流程。
+
+    input.value="" 会连 FileList 一起清空——若先清空再取文件，change 处理器
+    拿到空列表直接 return，表现为「点打开没反应」。用 DataTransfer 造两个假
+    文件触发 change，桩掉 saveIfNeeded/importMailFiles，验证回调收到 2 个文件。
+    """
+    result = _run_page_script(PICK_TEST_SCRIPT, "PICK:")
+    if result is None:
+        LOG.warning("找不到 Edge/Chrome，跳过文件选择导入检查")
+        return
+    assert result, "文件选择检查没有返回结果（浏览器未渲染页面）"
+    assert "ERR" not in result, f"文件选择检查脚本报错: {result}"
+    assert "called=1 count=2" in result, (
+        f"change 处理器没有把文件交给导入流程（FileList 疑似被提前清空）: {result}"
+    )
+    LOG.info("文件选择导入检查通过")
 
 
 def run_self_test(verbose: bool = False) -> int:
@@ -666,6 +689,7 @@ def run_self_test(verbose: bool = False) -> int:
     _check_internaldate_tz()
     _check_calendar_click()
     _check_import_chunking()
+    _check_file_pick_import()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)

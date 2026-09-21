@@ -666,6 +666,7 @@
     async function waitJobIdle() {
       while (true) {
         const job = await api("/api/job");
+        renderJob(job);
         if (!job.running) return job;
         await new Promise((r) => setTimeout(r, 600));
       }
@@ -676,6 +677,7 @@
       const BATCH = 20;
       let done = 0;
       let failed = 0;
+      setStatus(`开始导入 ${all.length} 封，按 20 封一批…`, "ok");
       toggleBusy(true);
       try {
         for (const group of chunkArray(all, BATCH)) {
@@ -701,9 +703,11 @@
     }
 
     $("file-input").addEventListener("change", async (ev) => {
-      const files = ev.target.files;
+      // 必须先拷贝成真数组再清空 input：input.value="" 会连带清空 FileList，
+      // 先清再取 files 就是空的，表现为选完文件点打开后毫无反应
+      const files = Array.from(ev.target.files);
       ev.target.value = "";
-      if (!files || !files.length) return;
+      if (!files.length) return;
       try {
         await saveIfNeeded();
       } catch (err) {
