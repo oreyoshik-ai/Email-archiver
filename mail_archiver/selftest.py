@@ -724,6 +724,47 @@ def _check_file_pick_import() -> None:
     LOG.info("文件选择导入检查通过")
 
 
+def _check_local_blobs() -> None:
+    """回归：网页上传直接归档内存字节（run_local_blobs），不再写 C 盘临时中转文件。"""
+    from mail_archiver.local_import import iter_message_bytes
+    from mail_archiver.pipeline import run_local_blobs
+
+    def make_blob(subject: str) -> tuple[str, bytes]:
+        msg = EmailMessage()
+        msg["From"] = formataddr(("样例发件人", "blobcheck@example.com"))
+        msg["To"] = formataddr(("收件人", "to@example.com"))
+        msg["Subject"] = subject
+        msg["Date"] = format_datetime(datetime(2026, 6, 15, 10, 0, 0, tzinfo=timezone(timedelta(hours=8))))
+        msg["Message-ID"] = make_msgid(domain="blobcheck.example")
+        return f"{subject}.eml", msg.as_bytes()
+
+    # mbox 容器分支：iter_message_bytes 能拆出信件字节（标准库 mbox 只认路径，内部走临时文件）
+    mbox_raw = (
+        b"From a@b Mon Jun 15 10:00:00 2026\n"
+        b"From: a@b\nSubject: mbox one\n\nbody one\n\n"
+        b"From c@d Mon Jun 15 11:00:00 2026\n"
+        b"From: c@d\nSubject: mbox two\n\nbody two\n\n"
+    )
+    mbox_msgs = list(iter_message_bytes("box.mbox", mbox_raw))
+    assert len(mbox_msgs) == 2, f"mbox 容器应拆出 2 封，实际 {len(mbox_msgs)}"
+
+    with tempfile.TemporaryDirectory(prefix="mail-blobs-") as tmp:
+        cfg = AppConfig(
+            archive_root=Path(tmp) / "archive",
+            timezone="Asia/Shanghai",
+            imap=ImapConfig(enabled=False),
+            extract=ExtractConfig(),
+        )
+        blobs = [make_blob("内存归档甲"), make_blob("内存归档乙")]
+        snaps: list[tuple[int, int, int]] = []
+        result = run_local_blobs(cfg, blobs, progress=lambda s, k, f: snaps.append((s, k, f)))
+        assert (result.saved, result.skipped, result.failed) == (2, 0, 0), (
+            f"内存导入应新存 2 封，实际 {result.saved}/{result.skipped}/{result.failed}"
+        )
+        assert snaps and snaps[-1] == (2, 0, 0), "进度回调缺失或末值不对"
+    LOG.info("内存直接归档检查通过")
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
@@ -737,6 +778,7 @@ def run_self_test(verbose: bool = False) -> int:
     _check_import_chunking()
     _check_file_pick_import()
     _check_progress_callback()
+    _check_local_blobs()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)

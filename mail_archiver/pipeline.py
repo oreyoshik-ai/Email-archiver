@@ -9,7 +9,7 @@ from pathlib import Path
 from mail_archiver.archiver import ArchiveResult, MailArchiver
 from mail_archiver.config import AppConfig
 from mail_archiver.imap_client import ImapSource
-from mail_archiver.local_import import iter_local_messages
+from mail_archiver.local_import import iter_local_messages, iter_message_bytes
 from mail_archiver.selftest import build_sample_dir
 from mail_archiver.util import resolve_timezone, to_tz
 
@@ -66,6 +66,18 @@ def run_local_paths(cfg: AppConfig, paths: list[Path], progress=None) -> Archive
         path = path.expanduser().resolve()
         LOG.info("导入: %s", path)
         for raw in iter_local_messages(path):
+            consume(archiver, result, raw)
+            if progress:
+                progress(result.saved, result.skipped, result.failed)
+    return result
+
+
+def run_local_blobs(cfg: AppConfig, blobs: list[tuple[str, bytes]], progress=None) -> ArchiveResult:
+    """直接归档内存里的 (文件名, 原始字节)——网页上传不再写临时中转文件落 C 盘。"""
+    archiver = _make_archiver(cfg)
+    result = ArchiveResult()
+    for name, data in blobs:
+        for raw in iter_message_bytes(name, data):
             consume(archiver, result, raw)
             if progress:
                 progress(result.saved, result.skipped, result.failed)

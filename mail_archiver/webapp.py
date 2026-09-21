@@ -4,11 +4,9 @@ import json
 import logging
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,9 +24,9 @@ from mail_archiver.config import (
 )
 from mail_archiver.imap_client import ImapError
 from mail_archiver.jobs import RUNNER
-from mail_archiver.pipeline import run_demo, run_imap, run_local_paths
+from mail_archiver.pipeline import run_demo, run_imap, run_local_blobs
 from mail_archiver.results import list_day, list_days, list_range
-from mail_archiver.util import resolve_timezone, sanitize_filename, unique_path
+from mail_archiver.util import resolve_timezone
 
 LOG = logging.getLogger("mail_archiver")
 
@@ -302,22 +300,10 @@ class AppHandler(BaseHTTPRequestHandler):
         blobs = [(name, content) for name, content in files if content.strip()]
         if not blobs:
             raise ValueError("没有读到邮件文件，请选择 .eml 或 .mbox")
-        tmp = Path(tempfile.mkdtemp(prefix="mail-upload-"))
-        paths: list[Path] = []
-        for name, content in blobs:
-            dest = unique_path(tmp / sanitize_filename(name or "mail.eml", max_len=120))
-            dest.write_bytes(content)
-            paths.append(dest)
         cfg = load_config()
-
-        def job():
-            try:
-                return run_local_paths(cfg, paths, progress=_live_progress())
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-
-        RUNNER.start("upload", job)
-        self._send(*_json_bytes({"ok": True, "count": len(paths), "job": RUNNER.state.snapshot()}))
+        # 直接归档内存字节，不再写 C 盘临时中转文件
+        RUNNER.start("upload", lambda: run_local_blobs(cfg, blobs, progress=_live_progress()))
+        self._send(*_json_bytes({"ok": True, "count": len(blobs), "job": RUNNER.state.snapshot()}))
 
     def _handle_open(self) -> None:
         data = self._read_json()
