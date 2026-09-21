@@ -34,7 +34,7 @@ def _make_archiver(cfg: AppConfig) -> MailArchiver:
     return archiver
 
 
-def run_imap(cfg: AppConfig, start: date, end: date) -> ArchiveResult:
+def run_imap(cfg: AppConfig, start: date, end: date, progress=None) -> ArchiveResult:
     tz = resolve_timezone(cfg.timezone)
     archiver = _make_archiver(cfg)
     result = ArchiveResult()
@@ -48,6 +48,8 @@ def run_imap(cfg: AppConfig, start: date, end: date) -> ArchiveResult:
             found = True
             received = to_tz(internal, tz) if internal else None
             consume(archiver, result, raw, received=received)
+            if progress:
+                progress(result.saved, result.skipped, result.failed)
     if not found:
         if start == end:
             result.note = f"{start.isoformat()} 当日收件箱没有邮件，已停止，未导出任何内容。"
@@ -56,7 +58,8 @@ def run_imap(cfg: AppConfig, start: date, end: date) -> ArchiveResult:
     return result
 
 
-def run_local_paths(cfg: AppConfig, paths: list[Path]) -> ArchiveResult:
+def run_local_paths(cfg: AppConfig, paths: list[Path], progress=None) -> ArchiveResult:
+    """逐封归档本地文件；progress(saved, skipped, failed) 每封回调一次，供任务状态实时计数。"""
     archiver = _make_archiver(cfg)
     result = ArchiveResult()
     for path in paths:
@@ -64,6 +67,8 @@ def run_local_paths(cfg: AppConfig, paths: list[Path]) -> ArchiveResult:
         LOG.info("导入: %s", path)
         for raw in iter_local_messages(path):
             consume(archiver, result, raw)
+            if progress:
+                progress(result.saved, result.skipped, result.failed)
     return result
 
 

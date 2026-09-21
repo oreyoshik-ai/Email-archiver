@@ -31,6 +31,23 @@ from mail_archiver.results import list_day, list_days, list_range
 from mail_archiver.util import resolve_timezone, sanitize_filename, unique_path
 
 LOG = logging.getLogger("mail_archiver")
+
+
+def _live_progress():
+    """逐封把运行计数写回任务状态：状态栏每 600ms 轮询一次即可看到数字递增。
+
+    不接回调的话 saved/skipped/failed 要等整个任务跑完才写入，几百封的导入
+    过程中状态栏数字纹丝不动，用户没法判断是在跑还是卡死了。
+    """
+    state = RUNNER.state
+
+    def progress(saved: int, skipped: int, failed: int) -> None:
+        with state.lock:
+            state.saved = saved
+            state.skipped = skipped
+            state.failed = failed
+
+    return progress
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 _PICKER_SCRIPT = """
@@ -274,7 +291,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 raise ValueError(f"日期格式错误，应为 YYYY-MM-DD: {exc}") from exc
             if start > end:
                 start, end = end, start
-            RUNNER.start("imap", lambda: run_imap(cfg, start, end))
+            RUNNER.start("imap", lambda: run_imap(cfg, start, end, progress=_live_progress()))
         else:
             raise ValueError("未知操作")
         self._send(*_json_bytes({"ok": True, "job": RUNNER.state.snapshot()}))
@@ -295,7 +312,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
         def job():
             try:
-                return run_local_paths(cfg, paths)
+                return run_local_paths(cfg, paths, progress=_live_progress())
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 

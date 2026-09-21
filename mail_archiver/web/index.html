@@ -361,10 +361,29 @@
       return data;
     }
 
+    // 批量导入进行中的累计进度；importMailFiles 维护、renderJob 读取。
+    // 任务运行时 renderJob 会周期性覆盖状态栏，不在这里拼批量进度的话，
+    // 用户全程只能看到"正在整理，请稍候…"，选几百封导入时等于没有进度。
+    let importProgress = null;
+
     function renderJob(job) {
       if (!job) return;
-      if (job.running) setStatus(job.message || "正在整理…", "run");
-      else if (job.phase === "error") setStatus(job.message || job.error, "err");
+      if (job.running) {
+        if (importProgress) {
+          // 批量导入：已完成批次的台账 + 当前批次的实时计数（后端逐封写回）
+          const p = importProgress;
+          const saved = p.saved + (job.saved || 0);
+          const skipped = p.skipped + (job.skipped || 0);
+          const failed = p.failed + (job.failed || 0);
+          const processed = p.done + p.failed + (job.saved || 0) + (job.skipped || 0) + (job.failed || 0);
+          setStatus(`批量导入 ${processed}/${p.total} · 新存 ${saved} · 跳过已存 ${skipped}` + (failed ? ` · 失败 ${failed}` : ""), "run");
+        } else {
+          let msg = job.message || "正在整理…";
+          const n = (job.saved || 0) + (job.skipped || 0) + (job.failed || 0);
+          if (n > 0) msg += `（新存 ${job.saved} · 跳过已存 ${job.skipped}` + (job.failed ? ` · 失败 ${job.failed}` : "") + "）";
+          setStatus(msg, "run");
+        }
+      } else if (job.phase === "error") setStatus(job.message || job.error, "err");
       else if (job.phase === "done") setStatus(job.message, "ok");
       const lines = (job.logs && job.logs.length) ? job.logs.join("\n") : "等待开始…";
       $("log").textContent = lines;
@@ -664,8 +683,19 @@
     }
 
     async function waitJobIdle() {
+      let pollErrors = 0;
       while (true) {
-        const job = await api("/api/job");
+        let job;
+        try {
+          job = await api("/api/job");
+          pollErrors = 0;
+        } catch (err) {
+          // 轮询瞬断别把整批判死：服务端多半只是忙，连续失败几次才放弃
+          pollErrors++;
+          if (pollErrors > 10) throw err;
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
         renderJob(job);
         if (!job.running) return job;
         await new Promise((r) => setTimeout(r, 600));
@@ -676,8 +706,10 @@
       const all = Array.from(list);
       const BATCH = 20;
       let done = 0;
+      let saved = 0;
+      let skipped = 0;
       let failed = 0;
-      setStatus(`开始导入 ${all.length} 封，按 20 封一批…`, "ok");
+      importProgress = { total: all.length, done: 0, saved: 0, skipped: 0, failed: 0 };
       toggleBusy(true);
       try {
         for (const group of chunkArray(all, BATCH)) {
@@ -687,18 +719,32 @@
             const res = await fetch("/api/import-files", { method: "POST", body });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || data.ok === false) throw new Error(data.error || "导入失败");
-            await waitJobIdle();
-            done += group.length;
+            const job = await waitJobIdle();
+            // 一批一个任务，任务结束时快照里的 saved/skipped/failed 就是本批结果
+            saved += job.saved || 0;
+            skipped += job.skipped || 0;
+            if (job.phase === "error") {
+              failed += group.length;
+              setStatus(`一批导入出错：${job.error || job.message || "未知错误"}`, "err");
+            } else {
+              done += group.length;
+            }
           } catch (err) {
             failed += group.length;
-            setStatus(err.message, "err");
+            setStatus(`${err.message}（这一批没导入完，结束后可重选同一批文件补导）`, "err");
           }
-          setStatus(`批量导入 ${done + failed}/${all.length}` + (failed ? `（失败 ${failed}）` : ""), failed ? "err" : "ok");
+          importProgress = { total: all.length, done, saved, skipped, failed };
+          setStatus(`批量导入 ${done + failed}/${all.length} · 新存 ${saved} · 跳过已存 ${skipped}` + (failed ? ` · 失败 ${failed}` : ""), failed ? "err" : "ok");
         }
       } finally {
         toggleBusy(false);
+        importProgress = null;
       }
-      if (!failed) setStatus(`批量导入完成，共 ${all.length} 封`, "ok");
+      if (!failed) {
+        setStatus(`批量导入完成（共 ${all.length} 封）：新存 ${saved}，跳过已存 ${skipped}`, "ok");
+      } else {
+        setStatus(`批量导入结束：新存 ${saved}，跳过已存 ${skipped}，失败 ${failed}。把同一批文件再选一次重导即可，已存过的会自动跳过`, "err");
+      }
       startPolling();
     }
 

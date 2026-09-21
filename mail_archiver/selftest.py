@@ -608,6 +608,15 @@ window.addEventListener('load', function () {
     out.push('sizes=' + chunkArray(dummy, 20).map(function (c) { return c.length; }).join(','));
     out.push('exact=' + chunkArray([1, 2, 3, 4], 2).map(function (c) { return c.length; }).join(','));
     out.push('empty=' + chunkArray([], 20).length);
+    importProgress = { total: 434, done: 40, saved: 35, skipped: 5, failed: 0 };
+    renderJob({ running: true, message: '正在整理，请稍候…', saved: 3, skipped: 2, failed: 0 });
+    out.push('prog=' + document.getElementById('status').textContent);
+    importProgress = null;
+    renderJob({ running: true, message: '正在整理，请稍候…', saved: 2, skipped: 1, failed: 0 });
+    out.push('live=' + document.getElementById('status').textContent);
+    importProgress = null;
+    renderJob({ running: false, phase: 'done', message: '整理完成：新存 20 封' });
+    out.push('idle=' + document.getElementById('status').textContent);
   } catch (e) { out.push('ERR ' + e.message); }
   document.title = 'CHUNK:' + out.join(' | ');
 });
@@ -631,7 +640,44 @@ def _check_import_chunking() -> None:
     assert "sizes=20,20,5" in result and "exact=2,2" in result and "empty=0" in result, (
         f"分批边界不对: {result}"
     )
+    assert "prog=批量导入 45/434 · 新存 38 · 跳过已存 7" in result, (
+        f"状态栏没把已完成批次台账与当前批实时计数相加: {result}"
+    )
+    assert "live=正在整理，请稍候…（新存 2 · 跳过已存 1）" in result, (
+        f"普通任务运行中状态栏没拼接实时计数: {result}"
+    )
+    assert "idle=整理完成：新存 20 封" in result, (
+        f"导入结束后状态栏没有恢复任务结果: {result}"
+    )
     LOG.info("批量导入分批检查通过")
+
+
+def _check_progress_callback() -> None:
+    """回归：进度回调逐封上报且与最终结果一致。
+
+    后端若整批跑完才写计数，几百封导入期间状态栏数字不动。run_local_paths
+    的 progress 回调每封调一次，这里验证逐封递增、单调、末值等于任务结果。
+    """
+    from mail_archiver.pipeline import run_local_paths
+
+    with tempfile.TemporaryDirectory(prefix="mail-progress-") as tmp:
+        tmp_path = Path(tmp)
+        sample = build_sample_dir(tmp_path)
+        cfg = AppConfig(
+            archive_root=tmp_path / "archive",
+            timezone="Asia/Shanghai",
+            imap=ImapConfig(enabled=False),
+            extract=ExtractConfig(),
+        )
+        snaps: list[tuple[int, int, int]] = []
+        result = run_local_paths(cfg, [sample], progress=lambda s, k, f: snaps.append((s, k, f)))
+        assert snaps, "进度回调一次都没被调用"
+        assert snaps[-1] == (result.saved, result.skipped, result.failed), (
+            f"最终进度 {snaps[-1]} 与任务结果 {result.saved}/{result.skipped}/{result.failed} 不一致"
+        )
+        sums = [s + k + f for s, k, f in snaps]
+        assert sums == sorted(sums) and len(set(sums)) == len(sums), f"进度没逐封递增: {sums}"
+        LOG.info("实时进度回调检查通过")
 
 
 PICK_TEST_SCRIPT = """
@@ -690,6 +736,7 @@ def run_self_test(verbose: bool = False) -> int:
     _check_calendar_click()
     _check_import_chunking()
     _check_file_pick_import()
+    _check_progress_callback()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
