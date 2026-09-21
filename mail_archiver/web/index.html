@@ -731,14 +731,20 @@
       html += "</div>";
       calEl.innerHTML = html;
 
-      $("cal-prev").addEventListener("click", () => {
+      // 必须在源头拦住冒泡：renderCalendar 用 innerHTML 重建面板，点击目标节点随即脱离
+      // DOM，事件仍沿派发时的原路径冒泡，而 contains(e.target) 对脱离节点恒为 false——
+      // 外层的开/关判断和 document 的关闭逻辑都会误判成"点了面板外"把面板关掉。
+      $("cal-prev").addEventListener("click", (e) => {
+        e.stopPropagation();
         calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendar();
       });
-      $("cal-next").addEventListener("click", () => {
+      $("cal-next").addEventListener("click", (e) => {
+        e.stopPropagation();
         calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendar();
       });
       calEl.querySelectorAll(".day[data-day]").forEach((el) => {
-        el.addEventListener("click", () => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
           const d = Number(el.dataset.day);
           pickDay(new Date(calYear, calMonth, d));
         });
@@ -758,6 +764,9 @@
 
     $("date-wrap").addEventListener("click", (e) => {
       e.stopPropagation();
+      // 面板内部的点击（翻月、选日期）交给各自的处理器，不能当成"开/关"把面板关掉，
+      // 否则点 ‹ › 翻月会被冒泡到这里立刻关闭，看起来就是点击失效。
+      if (calEl.contains(e.target)) return;
       if (calEl.hidden) openCalendar(); else closeCalendar();
     });
     $("date-label").addEventListener("click", (e) => {

@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 
 import logging
+import re
+import shutil
+import subprocess
 import tempfile
 import zipfile
 from datetime import date, datetime, timezone, timedelta
@@ -373,6 +376,84 @@ def _check_internaldate_tz() -> None:
     LOG.info("INTERNALDATE 时区检查通过")
 
 
+CAL_TEST_SCRIPT = """
+<script>
+window.addEventListener('load', function () {
+  var out = [];
+  try {
+    var cal = document.getElementById('calendar');
+    document.getElementById('date-wrap').click();
+    out.push('open: hidden=' + cal.hidden);
+    var t0 = document.querySelector('.cal-title').textContent.trim();
+    document.getElementById('cal-prev').click();
+    var t1 = document.querySelector('.cal-title').textContent.trim();
+    out.push('prev: hidden=' + cal.hidden + ' | ' + t0 + ' -> ' + t1);
+    document.getElementById('cal-next').click();
+    out.push('next: hidden=' + cal.hidden + ' | -> ' + document.querySelector('.cal-title').textContent.trim());
+    cal.querySelector('.day[data-day="15"]').click();
+    out.push('day15: hidden=' + cal.hidden + ' date=' + document.getElementById('date').value);
+    cal.querySelector('.day[data-day="18"]').click();
+    out.push('day18: hidden=' + cal.hidden + ' date=' + document.getElementById('date').value);
+  } catch (e) { out.push('ERR ' + e.message); }
+  document.title = 'TEST:' + out.join(' || ');
+});
+</script>
+"""
+
+
+def _check_calendar_click() -> None:
+    """回归：日历面板内点击（翻月/选日）不得被外层开/关处理器误关闭。
+
+    用无头浏览器加载页面副本、注入模拟点击脚本，结果写进 document.title 再解析。
+    面板内点击若冒泡到外层会立刻 closeCalendar，本检查直接复现用户操作路径。
+    """
+    from mail_archiver.screenshot import _find_browser
+
+    browser = _find_browser()
+    if not browser:
+        LOG.warning("找不到 Edge/Chrome，跳过日历点击检查")
+        return
+    page_src = Path(__file__).resolve().parent / "web" / "index.html"
+    tmp = tempfile.mkdtemp(prefix="cal-check-")
+    try:
+        page = Path(tmp) / "index.html"
+        page.write_text(
+            page_src.read_text(encoding="utf-8").replace("</body>", CAL_TEST_SCRIPT + "</body>"),
+            encoding="utf-8",
+        )
+        cmd = [
+            browser,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--virtual-time-budget=5000",
+            "--dump-dom",
+            page.as_uri(),
+        ]
+        dom = ""
+        for headless in ("--headless=new", "--headless"):
+            cmd[1] = headless
+            proc = subprocess.run(cmd, capture_output=True, timeout=30)
+            dom = (proc.stdout or b"").decode("utf-8", errors="replace")
+            if "TEST:" in dom:
+                break
+        match = re.search(r"TEST:(.*?)</title>", dom, re.S)
+        assert match, "日历点击测试没有返回结果（浏览器未渲染页面）"
+        result = match.group(1)
+        assert "ERR" not in result, f"日历点击测试脚本报错: {result}"
+        assert "prev: hidden=false" in result and "next: hidden=false" in result, (
+            f"翻月后面板被关闭: {result}"
+        )
+        assert "2026 年 8 月" in result, f"点击 ‹ 后月份没有切换: {result}"
+        # day15 点在"回到 9 月"之后：若 next 没把月份翻回来，这里会是 2026-08-15
+        assert "day15: hidden=false date=2026-09-15" in result and (
+            "day18: hidden=false date=2026-09-15 ~ 2026-09-18" in result
+        ), f"选日期后面板被关闭或区间值不对（区间两连点被中断）: {result}"
+        LOG.info("日历点击检查通过")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
@@ -380,6 +461,7 @@ def run_self_test(verbose: bool = False) -> int:
     _check_empty_day_filter()
     _check_range_filter()
     _check_internaldate_tz()
+    _check_calendar_click()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
