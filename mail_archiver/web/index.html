@@ -654,22 +654,63 @@
     });
 
     $("pick-files").addEventListener("click", () => $("file-input").click());
+    // 大批量导入（如从邮箱大师导出的几百封 .eml）分批上传：一次性 POST 全部会把
+    // 整个 multipart 读进内存，几百封带附件会撑爆内置服务器；且后端任务器同时只跑
+    // 一个任务，必须等上一批归档完再传下一批，否则后一批直接报"正在整理中"。
+    function chunkArray(list, size) {
+      const out = [];
+      for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+      return out;
+    }
+
+    async function waitJobIdle() {
+      while (true) {
+        const job = await api("/api/job");
+        if (!job.running) return job;
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+
+    async function importMailFiles(list) {
+      const all = Array.from(list);
+      const BATCH = 20;
+      let done = 0;
+      let failed = 0;
+      toggleBusy(true);
+      try {
+        for (const group of chunkArray(all, BATCH)) {
+          try {
+            const body = new FormData();
+            for (const file of group) body.append("files", file, file.name);
+            const res = await fetch("/api/import-files", { method: "POST", body });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) throw new Error(data.error || "导入失败");
+            await waitJobIdle();
+            done += group.length;
+          } catch (err) {
+            failed += group.length;
+            setStatus(err.message, "err");
+          }
+          setStatus(`批量导入 ${done + failed}/${all.length}` + (failed ? `（失败 ${failed}）` : ""), failed ? "err" : "ok");
+        }
+      } finally {
+        toggleBusy(false);
+      }
+      if (!failed) setStatus(`批量导入完成，共 ${all.length} 封`, "ok");
+      startPolling();
+    }
+
     $("file-input").addEventListener("change", async (ev) => {
       const files = ev.target.files;
+      ev.target.value = "";
       if (!files || !files.length) return;
       try {
         await saveIfNeeded();
-        const body = new FormData();
-        for (const file of files) body.append("files", file, file.name);
-        const res = await fetch("/api/import-files", { method: "POST", body });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) throw new Error(data.error || "导入失败");
-        startPolling();
       } catch (err) {
         setStatus(err.message, "err");
-      } finally {
-        ev.target.value = "";
+        return;
       }
+      importMailFiles(files);
     });
 
     // --- custom calendar ---

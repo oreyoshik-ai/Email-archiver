@@ -588,6 +588,73 @@ def _check_calendar_click() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+CHUNK_TEST_SCRIPT = """
+<script>
+window.addEventListener('load', function () {
+  var out = [];
+  try {
+    var input = document.getElementById('file-input');
+    out.push('multiple=' + input.multiple);
+    var dummy = []; for (var i = 0; i < 45; i++) dummy.push(i);
+    out.push('sizes=' + chunkArray(dummy, 20).map(function (c) { return c.length; }).join(','));
+    out.push('exact=' + chunkArray([1, 2, 3, 4], 2).map(function (c) { return c.length; }).join(','));
+    out.push('empty=' + chunkArray([], 20).length);
+  } catch (e) { out.push('ERR ' + e.message); }
+  document.title = 'CHUNK:' + out.join(' | ');
+});
+</script>
+"""
+
+
+def _check_import_chunking() -> None:
+    """回归：批量导入前端必须分批上传，且文件选择框允许多选。
+
+    从邮箱大师导出的几百封 .eml 若一次性 POST，整个 multipart 会被后端读进内存；
+    且后端任务器同时只跑一个任务。前端 chunkArray 负责切批、每批等任务跑完再传。
+    """
+    from mail_archiver.screenshot import _find_browser
+
+    browser = _find_browser()
+    if not browser:
+        LOG.warning("找不到 Edge/Chrome，跳过批量导入分批检查")
+        return
+    page_src = Path(__file__).resolve().parent / "web" / "index.html"
+    tmp = tempfile.mkdtemp(prefix="chunk-check-")
+    try:
+        page = Path(tmp) / "index.html"
+        page.write_text(
+            page_src.read_text(encoding="utf-8").replace("</body>", CHUNK_TEST_SCRIPT + "</body>"),
+            encoding="utf-8",
+        )
+        cmd = [
+            browser,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--virtual-time-budget=5000",
+            "--dump-dom",
+            page.as_uri(),
+        ]
+        dom = ""
+        for headless in ("--headless=new", "--headless"):
+            cmd[1] = headless
+            proc = subprocess.run(cmd, capture_output=True, timeout=30)
+            dom = (proc.stdout or b"").decode("utf-8", errors="replace")
+            if "CHUNK:" in dom:
+                break
+        match = re.search(r"CHUNK:(.*?)</title>", dom, re.S)
+        assert match, "批量导入检查没有返回结果（浏览器未渲染页面）"
+        result = match.group(1)
+        assert "ERR" not in result, f"批量导入检查脚本报错: {result}"
+        assert "multiple=true" in result, f"文件选择框应允许多选: {result}"
+        assert "sizes=20,20,5" in result and "exact=2,2" in result and "empty=0" in result, (
+            f"分批边界不对: {result}"
+        )
+        LOG.info("批量导入分批检查通过")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def run_self_test(verbose: bool = False) -> int:
     setup_logging(verbose)
     _check_infer()
@@ -598,6 +665,7 @@ def run_self_test(verbose: bool = False) -> int:
     _check_header_date_filing()
     _check_internaldate_tz()
     _check_calendar_click()
+    _check_import_chunking()
     with tempfile.TemporaryDirectory(prefix="mail-archiver-") as tmp:
         tmp_path = Path(tmp)
         _check_save_config(tmp_path)
